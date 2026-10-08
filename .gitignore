@@ -6,16 +6,35 @@ __pycache__/
 env/
 venv/
 
-# Project Data & Models
+# Audio Data & Reference Recordings
 data/audio/raw/*
 !data/audio/raw/.gitkeep
-data/audio/response_*.wav
+data/audio/reference/*
+!data/audio/reference/.gitkeep
+data/audio/*.wav
+data/audio/**/*.wav
+data/audio/**/*.mp3
+data/audio/**/*.flac
+data/audio/**/*.m4a
+
+# Personal Biography & Memory Data (Keeps folder structure and example templates only)
+data/biography/*
+!data/biography/.gitkeep
+!data/biography/*.example.md
+
+# Chat History Logs (WhatsApp, Discord exports)
+data/chat_logs/*
+!data/chat_logs/.gitkeep
+
+# Memory Vector Database & Indexes
 data/memory_db/*
 !data/memory_db/.gitkeep
+
+# Personal Persona Matrix (Keep persona.example.yaml tracked, keep personal persona.yaml local)
+configs/persona.yaml
 
 # IDE & OS
 .DS_Store
 .idea/
 .vscode/
 *.swp
-

@@ -14,9 +14,14 @@ class PromptBuilder:
         self.persona: Dict[str, Any] = self._load_persona()
 
     def _load_persona(self) -> Dict[str, Any]:
-        """Loads persona configuration from YAML."""
-        if self.config_path.exists():
-            with open(self.config_path, "r", encoding="utf-8") as f:
+        """Loads persona configuration from YAML with template fallback."""
+        target = self.config_path
+        if not target.exists():
+            fallback = Path("configs/persona.example.yaml")
+            if fallback.exists():
+                target = fallback
+        if target.exists():
+            with open(target, "r", encoding="utf-8") as f:
                 return yaml.safe_load(f) or {}
         return {}
 
