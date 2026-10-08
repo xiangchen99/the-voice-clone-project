@@ -1,0 +1,53 @@
+# Global Settings for Digital Self Preservation System
+
+hardware:
+  device: "cuda"            # "cuda" or "cpu"
+  compute_dtype: "float16"  # "float16" or "bfloat16" for modern NVIDIA GPUs
+  max_vram_gb: 16.0
+
+audio:
+  sample_rate: 24000        # Standard for XTTS / F5-TTS
+  channels: 1               # Mono audio
+  bit_depth: 16
+  target_lufs: -20.0        # EBU R128 standard loudness target
+  silence_thresh_db: -40.0  # Silence detection threshold
+  min_silence_duration_ms: 400
+  chunk_duration_sec: 10.0  # Max reference slice length
+  raw_dir: "data/audio/raw"
+  reference_dir: "data/audio/reference"
+
+memory:
+  db_dir: "data/memory_db"
+  collection_name: "autobiography"
+  embedding_model: "all-MiniLM-L6-v2"
+  biography_dir: "data/biography"
+  chat_logs_dir: "data/chat_logs"
+  top_k_retrieval: 4
+  relevance_threshold: 0.65
+
+llm:
+  backend: "ollama"         # "ollama" or "llama_cpp" or "openai_compatible"
+  endpoint_url: "http://127.0.0.1:11434"
+  model_name: "llama3.1:8b" # or qwen2.5:14b / qwen2.5:7b
+  temperature: 0.75
+  top_p: 0.9
+  max_tokens: 350
+  stream: true
+
+tts:
+  engine: "xtts_v2"         # "xtts_v2" or "f5_tts" or "mock"
+  reference_audio_path: "data/audio/reference/master_ref.wav"
+  language: "en"
+  temperature: 0.75
+  speed: 1.0
+
+asr:
+  model_size: "base.en"     # "base.en", "small.en", or "medium.en"
+  device: "cuda"
+  compute_type: "float16"
+
+web:
+  host: "127.0.0.1"
+  port: 7860
+  share: false
+

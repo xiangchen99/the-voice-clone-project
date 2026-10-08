@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+
+# Project Data & Models
+data/audio/raw/*
+!data/audio/raw/.gitkeep
+data/audio/response_*.wav
+data/memory_db/*
+!data/memory_db/.gitkeep
+
+# IDE & OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
