@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Digital Self: Voice & Personality Dashboard</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header & Navigation -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+            <line x1="12" y1="19" x2="12" y2="22"></line>
+          </svg>
+        </div>
+        <div>
+          <h1 class="brand-title">Digital Self Studio</h1>
+          <p class="brand-subtitle">Local Voice Cloning & Persona Preservation</p>
+        </div>
+      </div>
+
+      <!-- System Status Pills -->
+      <div class="system-status">
+        <div class="status-pill" id="status-memories">
+          <span class="status-dot"></span>
+          <span>Memories: <strong id="stat-memory-count">0</strong></span>
+        </div>
+        <div class="status-pill" id="status-voice">
+          <span class="status-dot"></span>
+          <span>Voice Clones: <strong id="stat-voice-count">0</strong></span>
+        </div>
+        <div class="status-pill" id="status-engine">
+          <span class="status-dot active"></span>
+          <span>Engine: <strong id="stat-engine-name">Local LLM</strong></span>
+        </div>
+        <div class="status-pill" id="status-tts">
+          <span class="status-dot" id="stat-tts-dot"></span>
+          <span>Voice: <strong id="stat-tts-engine">Checking...</strong></span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs">
+      <button class="tab-btn active" data-tab="tab-chat">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+        Conversation
+      </button>
+      <button class="tab-btn" data-tab="tab-interview">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z"></path><path d="M6 6h10"></path><path d="M6 10h10"></path></svg>
+        Life Interview
+      </button>
+      <button class="tab-btn" data-tab="tab-voice">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8"></polygon></svg>
+        Voice Studio
+      </button>
+      <button class="tab-btn" data-tab="tab-memories">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a8 8 0 0 0-8 8c0 5 8 12 8 12s8-7 8-12a8 8 0 0 0-8-8Z"></path><circle cx="12" cy="10" r="3"></circle></svg>
+        Memories & Chats
+      </button>
+      <button class="tab-btn" data-tab="tab-persona">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+        Persona Matrix
+      </button>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+
+      <!-- TAB 1: CONVERSATION -->
+      <section id="tab-chat" class="tab-pane active">
+        <div class="chat-layout">
+          <!-- Chat Messages Area -->
+          <div class="chat-main">
+            <div class="messages-container" id="chat-messages">
+              <div class="message assistant-msg">
+                <div class="msg-avatar">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg>
+                </div>
+                <div class="msg-body">
+                  <div class="msg-header">
+                    <span class="msg-author" id="chat-twin-name">Digital Twin</span>
+                    <span class="msg-time">Ready</span>
+                  </div>
+                  <div class="msg-text">
+                    Hey! I'm your digital twin. I'm running locally on your machine, grounded in your autobiographical memories and voice. Ask me anything, or speak with your microphone below!
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Chat Input Controls -->
+            <div class="chat-input-bar">
+              <div class="input-controls-row">
+                <input type="text" id="chat-text-input" placeholder="Type a message or question..." autocomplete="off">
+                
+                <!-- In-Browser Microphone Button -->
+                <button id="btn-record-chat" class="mic-btn" title="Click to Record Voice Message">
+                  <svg class="mic-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                  </svg>
+                  <span id="mic-label">Record</span>
+                </button>
+
+                <button id="btn-send-chat" class="send-btn">
+                  <span>Send</span>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                </button>
+              </div>
+
+              <!-- Live Audio Visualizer Banner (Appears when recording) -->
+              <div id="recording-banner" class="recording-banner hidden">
+                <div class="pulse-indicator"></div>
+                <span id="recording-timer">00:00</span>
+                <span class="rec-status-text">Recording microphone input... Click again to send.</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Side Panel: Recalled Memories Inspector -->
+          <aside class="chat-sidebar">
+            <div class="sidebar-card">
+              <div class="sidebar-header">
+                <h3>Cognitive Trace & Recall</h3>
+                <span class="badge" id="recalled-count-badge">0 Recalled</span>
+              </div>
+              <p class="sidebar-desc">Autobiographical memories dynamically retrieved from your vector store to ground the response.</p>
+              
+              <div class="recalled-memories-list" id="recalled-memories-container">
+                <div class="empty-recalled">No memories triggered yet. Ask a question about your background, career, or beliefs.</div>
+              </div>
+
+              <div class="turn-metrics" id="turn-metrics-box">
+                <div class="metric-item">
+                  <span class="m-label">Turnaround Time:</span>
+                  <span class="m-val" id="metric-total-time">-</span>
+                </div>
+                <div class="metric-item">
+                  <span class="m-label">Voice Synthesis:</span>
+                  <span class="m-val" id="metric-tts-time">-</span>
+                </div>
+              </div>
+
+              <!-- Audio Player for Latest Voice Reply -->
+              <div class="latest-audio-player">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                  <h4 style="margin:0;">Voice Output</h4>
+                  <span id="audio-engine-badge" style="font-size:0.75rem; padding:2px 8px; border-radius:12px; background:rgba(255,255,255,0.06); color:var(--text-muted);">Ready</span>
+                </div>
+                <div id="tts-fallback-banner" class="hidden" style="margin-bottom:8px; padding:8px 10px; font-size:0.75rem; line-height:1.4; border-radius:6px; background:rgba(245,158,11,0.12); border:1px solid rgba(245,158,11,0.3); color:#fbbf24;">
+                  ⚠️ <strong>Neural XTTS-v2 Offline</strong>: Browser Speech & notification chime active. To run authentic GPU voice cloning on your RTX 4080, run <code>bash scripts/setup_environment.sh</code>.
+                </div>
+                <audio id="audio-playback" controls class="custom-audio-player"></audio>
+                <div style="margin-top:6px; display:flex; justify-content:space-between; align-items:center;">
+                  <button id="btn-toggle-speech" style="font-size:0.72rem; background:transparent; border:none; color:var(--text-muted); cursor:pointer; padding:2px 0;">
+                    🔊 Browser Speech: <strong id="lbl-browser-speech">Enabled</strong>
+                  </button>
+                  <button id="btn-speak-again" class="btn-secondary" style="font-size:0.72rem; padding:2px 8px; display:none;">
+                    🗣️ Speak Again
+                  </button>
+                </div>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- TAB 2: LIFE INTERVIEW -->
+      <section id="tab-interview" class="tab-pane">
+        <div class="interview-layout">
+          <!-- Left Column: Question Navigator -->
+          <div class="interview-nav-col">
+            <div class="interview-progress-card">
+              <h3>Autobiographical Interview</h3>
+              <p>Answer questions in your authentic voice. Answers are automatically saved to your local biography store.</p>
+              <div class="progress-bar-container">
+                <div class="progress-bar" id="interview-progress-bar" style="width: 0%"></div>
+              </div>
+              <div class="progress-stats">
+                <span id="interview-progress-text">0 / 12 completed</span>
+              </div>
+            </div>
+
+            <!-- List of Questions -->
+            <div class="questions-list" id="questions-list-container">
+              <!-- Rendered via JS -->
+            </div>
+          </div>
+
+          <!-- Right Column: Active Question Editor -->
+          <div class="interview-editor-col">
+            <div class="editor-card" id="active-question-card">
+              <div class="editor-header">
+                <span class="badge-category" id="active-q-category">Category</span>
+                <span class="status-indicator" id="save-status-indicator">Saved</span>
+              </div>
+
+              <h2 class="active-question-title" id="active-q-title">Select a question to begin</h2>
+              <div class="active-question-prompt" id="active-q-prompt">
+                Click any question on the left to read the prompt and record your answer.
+              </div>
+
+              <div class="editor-input-area">
+                <label for="interview-answer-input">Your Reflections & Memories:</label>
+                <textarea id="interview-answer-input" rows="12" placeholder="Write naturally and authentically. Share specific anecdotes, pivotal lessons, or thoughts..."></textarea>
+              </div>
+
+              <div class="editor-actions">
+                <button id="btn-save-question" class="btn-primary">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+                  Save Memory Card
+                </button>
+                <button id="btn-next-question" class="btn-secondary">Next Question &rarr;</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: VOICE STUDIO -->
+      <section id="tab-voice" class="tab-pane">
+        <div class="voice-studio-layout">
+          <div class="studio-header-card">
+            <div>
+              <h2>Voice Studio & Reference Recorder</h2>
+              <p>Record your voice reading these phonetically balanced sentences. The system automatically normalizes loudness (EBU R128 -20 LUFS) and trims silence to condition the neural voice cloner.</p>
+            </div>
+            <div class="master-ref-status">
+              <span class="badge-status" id="master-ref-badge">Master Audio: Ready</span>
+              <audio id="master-audio-player" controls></audio>
+            </div>
+          </div>
+
+          <!-- Prompts Grid -->
+          <div class="prompts-grid" id="voice-prompts-grid">
+            <!-- Dynamically populated via JS -->
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 4: MEMORIES & CHATS -->
+      <section id="tab-memories" class="tab-pane">
+        <div class="memories-layout">
+          <!-- Left Column: Semantic Memory Explorer -->
+          <div class="memory-explorer-col">
+            <div class="card-box">
+              <div class="card-header">
+                <h3>Semantic Memory Search</h3>
+                <span class="badge" id="total-memories-count-badge">0 Cards</span>
+              </div>
+              <div class="search-input-group">
+                <input type="text" id="memory-search-input" placeholder="Search memories (e.g. childhood, robotics, values)...">
+                <button id="btn-search-memories" class="btn-primary">Search</button>
+              </div>
+
+              <div class="memory-search-results" id="memory-search-results">
+                <!-- Search results or full list rendered here -->
+              </div>
+            </div>
+          </div>
+
+          <!-- Right Column: Chat Log Importer -->
+          <div class="chat-importer-col">
+            <div class="card-box">
+              <div class="card-header">
+                <h3>Import Chat Logs (WhatsApp / Discord)</h3>
+              </div>
+              <p class="helper-text">Paste exported chat lines below. The parser extracts your messages, indexes them for memory retrieval, and calculates your linguistic cadence.</p>
+
+              <div class="form-group">
+                <label for="chat-author-filter">Your Name / Username in Export:</label>
+                <input type="text" id="chat-author-filter" placeholder="E.g. Xiang">
+              </div>
+
+              <div class="form-group">
+                <label for="chat-import-text">Chat Content:</label>
+                <textarea id="chat-import-text" rows="8" placeholder="Paste exported WhatsApp or Discord text here...&#10;[12/31/23, 10:45 PM] Xiang: Let's test the new local models tonight!"></textarea>
+              </div>
+
+              <button id="btn-import-chat" class="btn-primary">Parse & Ingest Chat History</button>
+
+              <div id="chat-import-analytics" class="import-analytics-box hidden">
+                <h4>Linguistic Cadence Summary</h4>
+                <div id="analytics-content"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: PERSONA MATRIX -->
+      <section id="tab-persona" class="tab-pane">
+        <div class="persona-layout">
+          <div class="card-box full-width">
+            <div class="card-header">
+              <h2>Persona Matrix & Linguistic Stance</h2>
+              <button id="btn-save-persona" class="btn-primary">Save Changes</button>
+            </div>
+            <p class="helper-text">Configured in <code>configs/persona.yaml</code>. Ground rules that dictate how your digital twin speaks and acts.</p>
+
+            <div class="persona-grid-form">
+              <div class="form-group">
+                <label>Name</label>
+                <input type="text" id="persona-name">
+              </div>
+
+              <div class="form-group">
+                <label>Full Name</label>
+                <input type="text" id="persona-fullname">
+              </div>
+
+              <div class="form-group full-span">
+                <label>Openness Trait</label>
+                <input type="text" id="persona-openness">
+              </div>
+
+              <div class="form-group full-span">
+                <label>Conscientiousness Trait</label>
+                <input type="text" id="persona-conscientiousness">
+              </div>
+
+              <div class="form-group full-span">
+                <label>Agreeableness Trait</label>
+                <input type="text" id="persona-agreeableness">
+              </div>
+
+              <div class="form-group">
+                <label>Characteristic / Favorite Phrases (Comma separated)</label>
+                <textarea id="persona-phrases" rows="3"></textarea>
+              </div>
+
+              <div class="form-group">
+                <label>Forbidden Words (Never used in responses)</label>
+                <textarea id="persona-avoid" rows="3"></textarea>
+              </div>
+
+              <div class="form-group full-span">
+                <label>Spoken Constraints (Punctuation, formatting, no emojis)</label>
+                <textarea id="persona-constraints" rows="4"></textarea>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="/static/app.js?v=3"></script>
+</body>
+</html>
+

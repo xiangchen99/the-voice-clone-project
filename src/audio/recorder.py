@@ -60,23 +60,40 @@ class VoiceRecorder:
         if not ref_files:
             return None
 
-        combined_audio: List[float] = []
         sr = self.preprocessor.target_sr
+        silence_samples = int(sr * 0.25)
 
-        import numpy as np
+        try:
+            import numpy as np
+            has_np = True
+        except ImportError:
+            has_np = False
+            np = None  # type: ignore
 
-        audio_arrays = []
-        for rf in ref_files:
-            audio, _ = self.preprocessor.load_wav(rf)
-            audio_arrays.append(audio)
-            # Add 250ms of silence between clips
-            silence_samples = int(sr * 0.25)
-            audio_arrays.append(np.zeros(silence_samples, dtype=np.float32))
+        if has_np:
+            audio_arrays = []
+            for rf in ref_files:
+                audio, _ = self.preprocessor.load_wav(rf)
+                if not isinstance(audio, np.ndarray):
+                    audio = np.array(audio, dtype=np.float32)
+                audio_arrays.append(audio)
+                audio_arrays.append(np.zeros(silence_samples, dtype=np.float32))
 
-        if not audio_arrays:
-            return None
+            if not audio_arrays:
+                return None
+            full_audio = np.concatenate(audio_arrays)
+        else:
+            combined_audio: List[float] = []
+            silence_padding = [0.0] * silence_samples
+            for rf in ref_files:
+                audio, _ = self.preprocessor.load_wav(rf)
+                combined_audio.extend(list(audio))
+                combined_audio.extend(silence_padding)
 
-        full_audio = np.concatenate(audio_arrays)
+            if not combined_audio:
+                return None
+            full_audio = combined_audio
+
         # Normalize master reference
         full_audio = self.preprocessor.normalize_loudness(full_audio, -20.0)
 

@@ -3,7 +3,9 @@
 import array
 import math
 import os
+import shutil
 import struct
+import subprocess
 import wave
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -34,15 +36,81 @@ class AudioPreprocessor:
         self.silence_threshold_db = silence_threshold_db
         self.min_silence_duration_ms = min_silence_duration_ms
 
-    def load_wav(self, file_path: Union[str, Path]) -> Tuple[Union[List[float], Any], int]:
+    def load_wav(self, file_path: Union[str, Path]) -> Tuple[Union[List[float], any], int]:
         """Loads a WAV file into normalized float samples [-1.0, 1.0]."""
-        file_path = str(file_path)
-        with wave.open(file_path, "rb") as wf:
-            n_channels = wf.getnchannels()
-            sample_width = wf.getsampwidth()
-            framerate = wf.getframerate()
-            n_frames = wf.getnframes()
-            raw_data = wf.readframes(n_frames)
+        p = Path(file_path)
+        if not p.exists() or not p.is_file():
+            raise FileNotFoundError(f"Audio file not found: {file_path}")
+
+        file_size = p.stat().st_size
+        if file_size < 12:
+            raise ValueError(f"Audio file is too small ({file_size} bytes) to be a valid WAV file.")
+
+        with open(p, "rb") as f:
+            header = f.read(12)
+
+        is_riff_wav = len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WAVE"
+        temp_converted: Optional[Path] = None
+
+        if not is_riff_wav:
+            # Check if ffmpeg is available to convert non-WAV formats (e.g. WebM, MP3, OGG)
+            if shutil.which("ffmpeg"):
+                temp_converted = p.with_name(f"{p.stem}_tmp_{os.getpid()}.wav")
+                try:
+                    subprocess.run(
+                        [
+                            "ffmpeg", "-y", "-i", str(p),
+                            "-ar", str(self.target_sr),
+                            "-ac", "1",
+                            "-c:a", "pcm_s16le",
+                            str(temp_converted),
+                        ],
+                        check=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    effective_path = str(temp_converted)
+                except Exception:
+                    if temp_converted.exists():
+                        temp_converted.unlink()
+                    temp_converted = None
+                    effective_path = str(p)
+            else:
+                effective_path = str(p)
+        else:
+            effective_path = str(p)
+
+        try:
+            with wave.open(effective_path, "rb") as wf:
+                n_channels = wf.getnchannels()
+                sample_width = wf.getsampwidth()
+                framerate = wf.getframerate()
+                n_frames = wf.getnframes()
+                raw_data = wf.readframes(n_frames)
+        except wave.Error as e:
+            if header[:4] == b"\x1a\x45\xdf\xa3":
+                detected = "WebM/Opus"
+            elif header[:4] == b"OggS":
+                detected = "Ogg"
+            elif header[4:8] == b"ftyp":
+                detected = "MP4/AAC"
+            else:
+                detected = None
+            hint = (
+                f" Received compressed {detected} audio instead of PCM WAV; "
+                f"reload the page (Ctrl+Shift+R) so the browser uses the raw PCM recorder."
+                if detected
+                else " Please ensure file is uncompressed PCM WAV format."
+            )
+            raise ValueError(
+                f"Invalid or corrupted WAV file '{file_path}' (header: {header[:4]!r}): {e}.{hint}"
+            ) from e
+        finally:
+            if temp_converted and temp_converted.exists():
+                try:
+                    temp_converted.unlink()
+                except OSError:
+                    pass
 
         if HAS_NUMPY:
             if sample_width == 2:
@@ -51,6 +119,16 @@ class AudioPreprocessor:
                 data = np.frombuffer(raw_data, dtype=np.int32).astype(np.float32) / 2147483648.0
             elif sample_width == 1:
                 data = (np.frombuffer(raw_data, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+            elif sample_width == 3:
+                # 24-bit PCM conversion
+                samples_list = []
+                for i in range(0, len(raw_data), 3):
+                    b0, b1, b2 = raw_data[i : i + 3]
+                    val = b0 | (b1 << 8) | (b2 << 16)
+                    if val & 0x800000:
+                        val -= 0x1000000
+                    samples_list.append(val / 8388608.0)
+                data = np.array(samples_list, dtype=np.float32)
             else:
                 raise ValueError(f"Unsupported sample width: {sample_width} bytes")
 
@@ -73,11 +151,40 @@ class AudioPreprocessor:
             elif sample_width == 1:
                 bytes_data = struct.unpack(f"<{n_frames * n_channels}B", raw_data)
                 samples = [(b - 128.0) / 128.0 for b in bytes_data]
+                if n_channels > 1:
+                    mono_samples = []
+                    for i in range(0, len(samples), n_channels):
+                        mono_samples.append(sum(samples[i : i + n_channels]) / n_channels)
+                    samples = mono_samples
+            elif sample_width == 3:
+                # 24-bit signed PCM
+                raw_samples = []
+                for i in range(0, len(raw_data), 3):
+                    b0, b1, b2 = raw_data[i : i + 3]
+                    val = b0 | (b1 << 8) | (b2 << 16)
+                    if val & 0x800000:
+                        val -= 0x1000000
+                    raw_samples.append(val / 8388608.0)
+                if n_channels == 1:
+                    samples = raw_samples
+                else:
+                    samples = []
+                    for i in range(0, len(raw_samples), n_channels):
+                        samples.append(sum(raw_samples[i : i + n_channels]) / n_channels)
+            elif sample_width == 4:
+                count = n_frames * n_channels
+                ints = struct.unpack(f"<{count}i", raw_data)
+                if n_channels == 1:
+                    samples = [s / 2147483648.0 for s in ints]
+                else:
+                    samples = []
+                    for i in range(0, count, n_channels):
+                        samples.append(sum(ints[i : i + n_channels]) / (n_channels * 2147483648.0))
             else:
                 raise ValueError(f"Unsupported sample width in standard lib fallback: {sample_width}")
             return samples, framerate
 
-    def save_wav(self, file_path: Union[str, Path], audio: Union[List[float], Any], sample_rate: int) -> None:
+    def save_wav(self, file_path: Union[str, Path], audio: Union[List[float], any], sample_rate: int) -> None:
         """Saves float samples to a 16-bit PCM mono WAV file."""
         os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
 
@@ -210,7 +317,7 @@ class AudioPreprocessor:
         min_samples = int(min_duration_sec * sample_rate)
 
         if len(audio) <= max_samples:
-            return [audio] if len(audio) >= min_samples else []
+            return [audio] if len(audio) > 0 else []
 
         # Calculate optimal balanced chunk count
         num_chunks = int(math.ceil(len(audio) / float(max_samples)))
@@ -229,6 +336,8 @@ class AudioPreprocessor:
                     chunks[-1] = np.concatenate([chunks[-1], chunk])
                 else:
                     chunks[-1] = list(chunks[-1]) + list(chunk)
+            elif len(chunk) > 0:
+                chunks.append(chunk)
             curr += chunk_size
 
         return chunks

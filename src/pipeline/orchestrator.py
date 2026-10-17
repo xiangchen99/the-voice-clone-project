@@ -110,12 +110,16 @@ class DigitalSelfOrchestrator:
         self.chat_history.append({"role": "assistant", "content": spoken_text})
 
         total_time = time.time() - t_start
+        tts_status = getattr(self.tts_engine, "get_status", lambda: {"name": "unknown", "is_mock": True, "message": ""})()
 
         return {
             "user_text": user_text,
             "response_text": spoken_text,
             "audio_path": audio_file,
             "retrieved_memories": recalled_raw,
+            "tts_engine": tts_status.get("name", "unknown"),
+            "tts_is_mock": tts_status.get("is_mock", True),
+            "tts_message": tts_status.get("message", ""),
             "metrics": {
                 "memory_retrieval_sec": round(t_mem, 3),
                 "llm_generation_sec": round(t_llm, 3),

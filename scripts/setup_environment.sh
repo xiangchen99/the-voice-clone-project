@@ -6,6 +6,9 @@ echo " Digital Self Preservation: Environment Setup"
 echo " Target: NVIDIA RTX 4080 (16GB VRAM) / Linux WSL2"
 echo "=========================================================="
 
+export COQUI_TOS_AGREED=1
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+
 # Check if uv is installed
 if ! command -v uv &> /dev/null; then
     echo "[1/4] Installing 'uv' package manager..."

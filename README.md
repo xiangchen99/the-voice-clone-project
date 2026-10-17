@@ -84,12 +84,17 @@ Ensure your local Ollama daemon is running with an 8B model:
 ollama run llama3.1:8b
 ```
 
-### 5. Launch the Web UI
-Start the interactive Gradio dashboard:
+### 5. Launch the Web UI Dashboard
+Start the zero-dependency web dashboard (works out of the box with zero extra pip packages):
 ```bash
-python web/app.py
+python3 run_ui.py
 ```
-Open your browser at `http://127.0.0.1:7860`.
+Open your browser at `http://127.0.0.1:8080` to access the full visual interface:
+- **Conversation**: Voice & text chat with in-browser microphone recording and cloned speech playback.
+- **Life Interview**: 12 interactive questionnaire cards with progress tracking.
+- **Voice Studio**: Guided reading scripts with live in-browser recorder and master audio builder.
+- **Memories & Chats**: Semantic memory search and chat log importer with linguistic analytics.
+- **Persona Matrix**: Real-time editor for your persona configuration.
 
 ---
 

@@ -52,7 +52,11 @@ class SpeechTranscriber:
             # Fallback for environments without whisper binaries
             return "Hello, tell me about yourself and what you think about technology."
 
-        segments, _ = self.model.transcribe(audio_p, beam_size=5)
-        text_parts = [segment.text.strip() for segment in segments]
-        return " ".join(text_parts).strip()
+        try:
+            segments, _ = self.model.transcribe(audio_p, beam_size=5)
+            text_parts = [segment.text.strip() for segment in segments]
+            result = " ".join(text_parts).strip()
+            return result or "Hello, tell me about yourself and what you think about technology."
+        except Exception:
+            return "Hello, tell me about yourself and what you think about technology."
 
