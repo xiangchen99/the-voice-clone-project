@@ -115,6 +115,27 @@ body {
   box-shadow: 0 0 8px var(--accent-emerald);
 }
 
+#status-engine .status-dot {
+  background-color: var(--text-muted);
+  box-shadow: none;
+}
+
+#status-engine[data-state="working"] .status-dot {
+  background-color: var(--accent-emerald);
+  box-shadow: 0 0 8px var(--accent-emerald);
+}
+
+#status-engine[data-state="demo"] .status-dot,
+#status-engine[data-state="missing_model"] .status-dot {
+  background-color: #f59e0b;
+}
+
+#status-engine[data-state="unavailable"] .status-dot,
+#status-engine[data-state="dashboard_unavailable"] .status-dot,
+#status-engine[data-state="reply_failed"] .status-dot {
+  background-color: var(--accent-rose);
+}
+
 /* Navigation Tabs */
 .nav-tabs {
   display: flex;
@@ -897,3 +918,43 @@ body {
   font-weight: 600;
 }
 
+
+.chat-input-status {
+  margin: 0.5rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.chat-input-status:empty {
+  display: none;
+}
+
+.choice-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+
+.voice-reference-form {
+  margin-bottom: 1rem;
+}
+
+.voice-reference-form fieldset {
+  padding: 0;
+  border: 0;
+  margin-bottom: 0.75rem;
+}
+
+.voice-reference-form legend {
+  font-weight: 600;
+}
+
+.message .reply-replay,
+.message .reply-sources {
+  margin-top: 0.5rem;
+}
+
+#audio-playback[hidden] {
+  display: none;
+}

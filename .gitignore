@@ -7,6 +7,7 @@ env/
 venv/
 
 # Audio Data & Reference Recordings
+data/audio/voice_comparisons/
 data/audio/raw/*
 !data/audio/raw/.gitkeep
 data/audio/reference/*
@@ -32,6 +33,7 @@ data/memory_db/*
 
 # Personal Persona Matrix (Keep persona.example.yaml tracked, keep personal persona.yaml local)
 configs/persona.yaml
+configs/persona.local.yaml
 
 # IDE & OS
 .DS_Store

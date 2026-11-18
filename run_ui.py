@@ -15,16 +15,13 @@ from pathlib import Path
 
 def check_and_switch_venv() -> None:
     """If a dedicated .venv exists and we are not in it, switch to it."""
-    venv_python = Path(__file__).resolve().parent / ".venv" / "bin" / "python"
-    if venv_python.exists():
+    venv_dir = Path(__file__).resolve().parent / ".venv"
+    venv_python = venv_dir / "bin" / "python"
+    if venv_python.exists() and Path(sys.prefix).resolve() != venv_dir.resolve():
         try:
-            curr_exe = Path(sys.executable).resolve()
-            target_exe = venv_python.resolve()
-            if curr_exe != target_exe:
-                print(f"[Launcher] Detected isolated environment at {venv_python}")
-                print(f"[Launcher] Re-executing with {target_exe}...")
-                os.execv(str(target_exe), [str(target_exe)] + sys.argv)
-        except Exception:
+            print(f"[Launcher] Re-executing with {venv_python}...", flush=True)
+            os.execv(str(venv_python), [str(venv_python), *sys.argv])
+        except OSError:
             pass
 
 
@@ -46,9 +43,9 @@ def print_startup_banner(host: str, port: int) -> None:
 
     try:
         from TTS.api import TTS  # type: ignore
-        print(" • Voice Cloning Engine: Coqui XTTS-v2 Neural Pipeline [ONLINE]")
+        print(" • Voice Cloning Engine: Coqui XTTS-v2 package installed")
     except ImportError:
-        print(" • Voice Cloning Engine: Mock Fallback [OFFLINE]")
+        print(" • Voice Cloning Engine: Coqui XTTS-v2 package unavailable")
         print("   -> To activate authentic RTX 4080 neural voice cloning, run:")
         print("      bash scripts/setup_environment.sh")
 

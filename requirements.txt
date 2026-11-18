@@ -14,6 +14,8 @@ pydub>=0.25.1
 # Speech Recognition & Voice Synthesis
 faster-whisper>=1.0.0
 TTS>=0.22.0
+# Coqui XTTS 0.22 uses the Transformers 4 generation API.
+transformers>=4.33,<4.50
 
 # Memory & Vector Store
 chromadb>=0.5.0

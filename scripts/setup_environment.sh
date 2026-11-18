@@ -1,38 +1,44 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "=========================================================="
-echo " Digital Self Preservation: Environment Setup"
-echo " Target: NVIDIA RTX 4080 (16GB VRAM) / Linux WSL2"
-echo "=========================================================="
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
-export COQUI_TOS_AGREED=1
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
-# Check if uv is installed
-if ! command -v uv &> /dev/null; then
-    echo "[1/4] Installing 'uv' package manager..."
+if ! command -v uv >/dev/null 2>&1; then
+    echo "Installing uv..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 fi
 
-echo "[2/4] Creating Python 3.11 isolated environment..."
-uv venv --python 3.11 .venv
+venv_python=.venv/bin/python
+if ! "$venv_python" -c 'import sys; raise SystemExit(sys.version_info[:2] != (3, 11))' 2>/dev/null; then
+    if [[ -e .venv || -L .venv ]]; then
+        mkdir -p env
+        backup_dir=$(mktemp -d env/venv-backup.XXXXXX)
+        mv -- .venv "$backup_dir/.venv"
+        echo "Previous environment saved to $backup_dir/.venv"
+    fi
+    echo "Creating the Python 3.11 environment..."
+    uv venv --python 3.11 .venv
+fi
 
-# Activate venv
-source .venv/bin/activate
+if ! "$venv_python" - <<'PY'
+from importlib.metadata import PackageNotFoundError, version
 
-echo "[3/4] Installing PyTorch with CUDA 12.4 support..."
-uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+try:
+    has_cuda_builds = all(version(package).endswith("+cu124") for package in ("torch", "torchvision", "torchaudio"))
+except PackageNotFoundError:
+    has_cuda_builds = False
+raise SystemExit(not has_cuda_builds)
+PY
+then
+    echo "Installing PyTorch with CUDA 12.4 support..."
+    uv pip install --python "$venv_python" --index-url https://download.pytorch.org/whl/cu124 \
+        --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio \
+        torch torchvision torchaudio
+fi
 
-echo "[4/4] Installing project dependencies..."
-uv pip install -r requirements.txt
+uv pip install --python "$venv_python" -r requirements.txt
+uv pip check --python "$venv_python"
 
-# Create necessary directories
 mkdir -p data/audio/raw data/audio/reference data/biography data/chat_logs data/memory_db
-
-echo "=========================================================="
-echo " Setup complete! Activate the environment with:"
-echo "   source .venv/bin/activate"
-echo "=========================================================="
-

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Digital Self: Voice & Personality Dashboard</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/styles.css?v=5">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -38,8 +38,8 @@
           <span>Voice Clones: <strong id="stat-voice-count">0</strong></span>
         </div>
         <div class="status-pill" id="status-engine">
-          <span class="status-dot active"></span>
-          <span>Engine: <strong id="stat-engine-name">Local LLM</strong></span>
+          <span class="status-dot" aria-hidden="true"></span>
+          <span>Engine: <strong id="stat-engine-name" role="status">Checking…</strong></span>
         </div>
         <div class="status-pill" id="status-tts">
           <span class="status-dot" id="stat-tts-dot"></span>
@@ -100,7 +100,7 @@
             <!-- Chat Input Controls -->
             <div class="chat-input-bar">
               <div class="input-controls-row">
-                <input type="text" id="chat-text-input" placeholder="Type a message or question..." autocomplete="off">
+                <input type="text" id="chat-text-input" placeholder="Type a message or question..." aria-label="Message or transcript" aria-describedby="chat-input-status" autocomplete="off">
                 
                 <!-- In-Browser Microphone Button -->
                 <button id="btn-record-chat" class="mic-btn" title="Click to Record Voice Message">
@@ -121,8 +121,9 @@
               <div id="recording-banner" class="recording-banner hidden">
                 <div class="pulse-indicator"></div>
                 <span id="recording-timer">00:00</span>
-                <span class="rec-status-text">Recording microphone input... Click again to send.</span>
+                <span class="rec-status-text">Recording microphone input. Stop to review the transcript.</span>
               </div>
+              <p id="chat-input-status" class="chat-input-status" role="status"></p>
             </div>
           </div>
 
@@ -130,23 +131,27 @@
           <aside class="chat-sidebar">
             <div class="sidebar-card">
               <div class="sidebar-header">
-                <h3>Cognitive Trace & Recall</h3>
-                <span class="badge" id="recalled-count-badge">0 Recalled</span>
+                <h3>Memory Sources</h3>
+                <span class="badge" id="recalled-count-badge">0 cited</span>
               </div>
-              <p class="sidebar-desc">Autobiographical memories dynamically retrieved from your vector store to ground the response.</p>
+              <p class="sidebar-desc">Approved memory cards cited by the latest reply.</p>
               
               <div class="recalled-memories-list" id="recalled-memories-container">
-                <div class="empty-recalled">No memories triggered yet. Ask a question about your background, career, or beliefs.</div>
+                <div class="empty-recalled">No memories cited yet.</div>
               </div>
 
               <div class="turn-metrics" id="turn-metrics-box">
                 <div class="metric-item">
-                  <span class="m-label">Turnaround Time:</span>
+                  <span class="m-label">Server turn:</span>
                   <span class="m-val" id="metric-total-time">-</span>
                 </div>
                 <div class="metric-item">
-                  <span class="m-label">Voice Synthesis:</span>
+                  <span class="m-label">Voice synthesis:</span>
                   <span class="m-val" id="metric-tts-time">-</span>
+                </div>
+                <div class="metric-item">
+                  <span class="m-label">Send to playback:</span>
+                  <span class="m-val" id="metric-playback-time">-</span>
                 </div>
               </div>
 
@@ -156,18 +161,8 @@
                   <h4 style="margin:0;">Voice Output</h4>
                   <span id="audio-engine-badge" style="font-size:0.75rem; padding:2px 8px; border-radius:12px; background:rgba(255,255,255,0.06); color:var(--text-muted);">Ready</span>
                 </div>
-                <div id="tts-fallback-banner" class="hidden" style="margin-bottom:8px; padding:8px 10px; font-size:0.75rem; line-height:1.4; border-radius:6px; background:rgba(245,158,11,0.12); border:1px solid rgba(245,158,11,0.3); color:#fbbf24;">
-                  ⚠️ <strong>Neural XTTS-v2 Offline</strong>: Browser Speech & notification chime active. To run authentic GPU voice cloning on your RTX 4080, run <code>bash scripts/setup_environment.sh</code>.
-                </div>
-                <audio id="audio-playback" controls class="custom-audio-player"></audio>
-                <div style="margin-top:6px; display:flex; justify-content:space-between; align-items:center;">
-                  <button id="btn-toggle-speech" style="font-size:0.72rem; background:transparent; border:none; color:var(--text-muted); cursor:pointer; padding:2px 0;">
-                    🔊 Browser Speech: <strong id="lbl-browser-speech">Enabled</strong>
-                  </button>
-                  <button id="btn-speak-again" class="btn-secondary" style="font-size:0.72rem; padding:2px 8px; display:none;">
-                    🗣️ Speak Again
-                  </button>
-                </div>
+                <p id="audio-status" class="chat-input-status" role="status"></p>
+                <audio id="audio-playback" controls class="custom-audio-player" hidden></audio>
               </div>
             </div>
           </aside>
@@ -214,6 +209,10 @@
                 <textarea id="interview-answer-input" rows="12" placeholder="Write naturally and authentically. Share specific anecdotes, pivotal lessons, or thoughts..."></textarea>
               </div>
 
+              <label class="choice-field">
+                <input type="checkbox" id="interview-chat-approval">
+                Use this answer as a source in Conversation
+              </label>
               <div class="editor-actions">
                 <button id="btn-save-question" class="btn-primary">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
@@ -239,6 +238,16 @@
               <audio id="master-audio-player" controls></audio>
             </div>
           </div>
+
+          <form id="voice-reference-form" class="card-box voice-reference-form">
+            <fieldset>
+              <legend>Conversation voice references</legend>
+              <p class="helper-text">Select the recordings XTTS should use for replies.</p>
+              <div id="voice-reference-options"></div>
+            </fieldset>
+            <button type="submit" class="btn-primary">Save voice references</button>
+            <p id="voice-reference-status" class="chat-input-status" role="status"></p>
+          </form>
 
           <!-- Prompts Grid -->
           <div class="prompts-grid" id="voice-prompts-grid">
@@ -305,7 +314,7 @@
               <h2>Persona Matrix & Linguistic Stance</h2>
               <button id="btn-save-persona" class="btn-primary">Save Changes</button>
             </div>
-            <p class="helper-text">Configured in <code>configs/persona.yaml</code>. Ground rules that dictate how your digital twin speaks and acts.</p>
+            <p class="helper-text">Saved locally in <code>configs/persona.local.yaml</code>.</p>
 
             <div class="persona-grid-form">
               <div class="form-group">
@@ -347,6 +356,12 @@
                 <label>Spoken Constraints (Punctuation, formatting, no emojis)</label>
                 <textarea id="persona-constraints" rows="4"></textarea>
               </div>
+
+              <div class="form-group full-span">
+                <label for="persona-approved-replies">Replies you wrote or approved</label>
+                <p class="helper-text">Enter one reply per line. Include examples of how you give advice, disagree, joke, or express uncertainty.</p>
+                <textarea id="persona-approved-replies" rows="5"></textarea>
+              </div>
             </div>
           </div>
         </div>
@@ -355,7 +370,7 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=3"></script>
+  <script src="/static/app.js?v=5"></script>
 </body>
 </html>
 

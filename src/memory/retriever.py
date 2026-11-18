@@ -14,6 +14,10 @@ class MemoryRetriever:
     def retrieve_context(self, user_query: str) -> str:
         """Finds relevant personal memories and formats them into a clean prompt context block."""
         matches = self.store.query(user_query, top_k=self.top_k)
+        return self.format_context(matches)
+
+    @staticmethod
+    def format_context(matches: List[Dict[str, Any]]) -> str:
         if not matches:
             return ""
 
@@ -24,14 +28,14 @@ class MemoryRetriever:
             # Truncate content to ~300 chars if too long to maintain concise prompt context
             if len(content) > 600:
                 content = content[:600] + "... [truncated]"
-            context_lines.append(f"[Memory {idx} | Category: {category}]")
+            context_lines.append(f"[M{idx}] Category: {category}")
             context_lines.append(content)
             context_lines.append("")
 
         context_lines.append("--- END OF MEMORIES ---")
         return "\n".join(context_lines)
 
-    def retrieve_memories_raw(self, user_query: str) -> List[Dict[str, Any]]:
+    def retrieve_memories_raw(self, user_query: str, *, approved_only: bool = False) -> List[Dict[str, Any]]:
         """Returns raw matched memory dictionaries."""
-        return self.store.query(user_query, top_k=self.top_k)
+        return self.store.query(user_query, top_k=self.top_k, approved_only=approved_only)
 

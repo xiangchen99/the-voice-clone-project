@@ -4,9 +4,10 @@ import abc
 import logging
 import math
 import os
+import tempfile
 import wave
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Sequence, Union
 
 # Auto-accept Coqui Public Model License non-interactively
 os.environ.setdefault("COQUI_TOS_AGREED", "1")
@@ -21,6 +22,13 @@ except ImportError:
     np = None  # type: ignore
 
 
+ReferenceAudio = Union[str, Path, Sequence[Union[str, Path]]]
+
+
+class SynthesisError(RuntimeError):
+    """The requested audio could not be generated."""
+
+
 class BaseTTSEngine(abc.ABC):
     """Abstract interface for neural voice cloning engines."""
 
@@ -28,7 +36,7 @@ class BaseTTSEngine(abc.ABC):
     def synthesize(
         self,
         text: str,
-        reference_audio_path: Union[str, Path],
+        reference_audio_path: ReferenceAudio,
         output_path: Union[str, Path],
         language: str = "en",
         temperature: float = 0.75,
@@ -64,110 +72,81 @@ class XTTSv2Engine(BaseTTSEngine):
         if self.init_error is not None:
             return {
                 "name": "xtts_v2",
-                "is_mock": True,
+                "is_mock": False,
                 "ready": False,
                 "message": f"XTTS-v2 initialization failed: {self.init_error}",
             }
-        try:
-            import torch
-            from TTS.api import TTS  # type: ignore
-            cuda_avail = torch.cuda.is_available()
-            if self.device == "cuda" and not cuda_avail:
-                dev_note = "CUDA requested but not detected (will fall back to CPU)"
-            else:
-                dev_note = f"ready for lazy load on {self.device}"
-            return {
-                "name": "xtts_v2",
-                "is_mock": False,
-                "ready": True,
-                "message": f"XTTS-v2 installed; {dev_note}",
-            }
-        except Exception as exc:
-            return {
-                "name": "xtts_v2",
-                "is_mock": True,
-                "ready": False,
-                "message": f"Neural TTS dependencies not installed in this environment ({exc}). Run scripts/setup_environment.sh to activate.",
-            }
+        return {
+            "name": "xtts_v2",
+            "is_mock": False,
+            "ready": False,
+            "message": "XTTS-v2 will load when it synthesizes its first reply.",
+        }
 
     def _lazy_init(self) -> None:
         """Loads XTTS model weights into VRAM on first call."""
         if self.model is None:
             try:
                 from TTS.api import TTS
-                self.model = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False).to(self.device)
+                from TTS.config.shared_configs import BaseDatasetConfig
+                from TTS.tts.configs.xtts_config import XttsConfig
+                from TTS.tts.models.xtts import XttsArgs, XttsAudioConfig
+                from torch.serialization import safe_globals
+
+                # The published XTTS checkpoint stores these config objects alongside its tensors.
+                with safe_globals([XttsConfig, XttsArgs, XttsAudioConfig, BaseDatasetConfig]):
+                    model = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
+                self.model = model.to(self.device)
                 self.init_error = None
             except Exception as e:
                 self.init_error = str(e)
-                logger.warning(
-                    f"Failed to initialize XTTS-v2 on {self.device}: {e}. "
-                    "Falling back to MockTTSEngine."
-                )
-                raise RuntimeError(
-                    f"Failed to initialize XTTS-v2 on {self.device}. "
-                    f"Ensure 'TTS' package and PyTorch CUDA are installed. Details: {e}"
-                )
+                logger.warning("Failed to initialize XTTS-v2: %s", e)
+                raise SynthesisError("XTTS-v2 could not load. Check the local model and compute device.") from e
 
     def synthesize(
         self,
         text: str,
-        reference_audio_path: Union[str, Path],
+        reference_audio_path: ReferenceAudio,
         output_path: Union[str, Path],
         language: str = "en",
         temperature: float = 0.75,
         speed: float = 1.0,
     ) -> str:
+        values = [reference_audio_path] if isinstance(reference_audio_path, (str, Path)) else reference_audio_path
+        references = [Path(value) for value in values if value and str(value).strip()]
+        if not references or any(not path.is_file() for path in references):
+            raise SynthesisError("Selected voice reference is missing. Record or select a reference WAV in Voice Studio.")
+
+        for path in references:
+            try:
+                with wave.open(str(path), "rb") as wav:
+                    if not wav.getnframes():
+                        raise wave.Error("Empty reference")
+            except (OSError, EOFError, wave.Error) as exc:
+                raise SynthesisError("A selected voice reference is unreadable or empty. Select a valid WAV.") from exc
+
+        self._lazy_init()
+        output = Path(output_path)
         try:
-            self._lazy_init()
-        except RuntimeError:
-            return MockTTSEngine().synthesize(
-                text=text,
-                reference_audio_path=reference_audio_path,
-                output_path=output_path,
-                language=language,
-                temperature=temperature,
-                speed=speed,
-            )
-
-        out_p = Path(output_path)
-        out_p.parent.mkdir(parents=True, exist_ok=True)
-
-        ref_p = Path(reference_audio_path)
-        if not ref_p.exists():
-            alternatives = list(Path("data/audio/reference").glob("*.wav")) + list(Path("data/audio").glob("*.wav"))
-            if alternatives:
-                ref_p = alternatives[0]
-            else:
-                logger.warning(f"No reference audio found at {reference_audio_path}. Falling back to MockTTSEngine.")
-                return MockTTSEngine().synthesize(
+            output.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=output.parent) as temp:
+                candidate = Path(temp) / "reply.wav"
+                self.model.tts_to_file(
                     text=text,
-                    reference_audio_path=reference_audio_path,
-                    output_path=output_path,
+                    speaker_wav=[str(path) for path in references],
                     language=language,
+                    file_path=str(candidate),
                     temperature=temperature,
                     speed=speed,
                 )
-
-        try:
-            self.model.tts_to_file(
-                text=text,
-                speaker_wav=str(ref_p),
-                language=language,
-                file_path=str(out_p),
-                temperature=temperature,
-                speed=speed,
-            )
-            return str(out_p)
+                with wave.open(str(candidate), "rb") as wav:
+                    if not wav.getnframes():
+                        raise wave.Error("Empty reply")
+                candidate.replace(output)
         except Exception as exc:
-            logger.warning(f"XTTS synthesis error: {exc}. Falling back to MockTTSEngine.")
-            return MockTTSEngine().synthesize(
-                text=text,
-                reference_audio_path=reference_audio_path,
-                output_path=output_path,
-                language=language,
-                temperature=temperature,
-                speed=speed,
-            )
+            logger.warning("XTTS synthesis failed: %s", exc)
+            raise SynthesisError("XTTS-v2 could not generate audio for this reply.") from exc
+        return str(output)
 
 
 class MockTTSEngine(BaseTTSEngine):
@@ -185,13 +164,13 @@ class MockTTSEngine(BaseTTSEngine):
             "name": "mock",
             "is_mock": True,
             "ready": True,
-            "message": "Synthetic tone fallback engine (neural XTTS-v2 offline)",
+            "message": "Demo mode uses a synthetic chime.",
         }
 
     def synthesize(
         self,
         text: str,
-        reference_audio_path: Union[str, Path],
+        reference_audio_path: ReferenceAudio,
         output_path: Union[str, Path],
         language: str = "en",
         temperature: float = 0.75,
@@ -253,11 +232,6 @@ def get_tts_engine(engine_name: str = "xtts_v2", device: str = "cuda") -> BaseTT
     eng = engine_name.lower()
     if eng == "mock":
         return MockTTSEngine()
-    elif eng == "xtts_v2":
-        try:
-            return XTTSv2Engine(device=device)
-        except Exception:
-            # Fallback to mock if weights/libraries not present yet
-            return MockTTSEngine()
-    else:
-        return MockTTSEngine()
+    if eng == "xtts_v2":
+        return XTTSv2Engine(device=device)
+    raise ValueError(f"Unsupported voice engine: {engine_name}.")

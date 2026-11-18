@@ -25,6 +25,9 @@ document.addEventListener('DOMContentLoaded', () => {
   initMemories();
   initPersona();
   refreshSystemStatus();
+  setInterval(() => {
+    if (!document.hidden) refreshSystemStatus();
+  }, 15000);
 });
 
 // ========================================================
@@ -152,135 +155,157 @@ function initTabs() {
 async function refreshSystemStatus() {
   try {
     const res = await fetch('/api/status');
-    if (!res.ok) return;
+    if (!res.ok) throw new Error('Status request failed');
     const data = await res.json();
     document.getElementById('stat-memory-count').textContent = data.memories_count || 0;
     document.getElementById('stat-voice-count').textContent = data.voice_samples_count || 0;
-    if (data.llm_model) {
-      document.getElementById('stat-engine-name').textContent = data.llm_model;
-    }
+    renderEngineStatus(data.llm_status, data.llm_model);
     const ttsEl = document.getElementById('stat-tts-engine');
     const ttsDot = document.getElementById('stat-tts-dot');
     if (ttsEl && ttsDot) {
       if (data.tts_is_mock) {
-        ttsEl.textContent = 'Mock Fallback';
+        ttsEl.textContent = 'Demo';
         ttsDot.className = 'status-dot';
         ttsDot.style.background = '#f59e0b';
       } else {
-        ttsEl.textContent = data.tts_engine || 'XTTS-v2';
-        ttsDot.className = 'status-dot active';
-        ttsDot.style.background = '';
+        ttsEl.textContent = data.tts_ready ? 'XTTS-v2' : 'XTTS-v2 · standby';
+        ttsDot.classList.toggle('active', data.tts_ready);
+        ttsDot.style.background = data.tts_ready ? '' : 'var(--text-muted)';
       }
     }
   } catch (err) {
+    renderEngineStatus('dashboard_unavailable');
     console.error('Failed to fetch status:', err);
   }
 }
 
-// Global Browser Speech state
-let browserSpeechEnabled = true;
-let lastAssistantResponseText = '';
-
-function speakBrowserText(text) {
-  if (!('speechSynthesis' in window) || !browserSpeechEnabled || !text) return;
-  try {
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-    utterance.lang = 'en-US';
-    window.speechSynthesis.speak(utterance);
-  } catch (err) {
-    console.warn('Browser speech error:', err);
-  }
+function renderEngineStatus(state, model = '') {
+  const labels = {
+    demo: 'Demo',
+    unavailable: 'Ollama unavailable',
+    missing_model: 'Model missing',
+    installed: 'Model installed',
+    working: model,
+    reply_failed: 'Last reply failed',
+    unchecked: 'Unverified',
+    dashboard_unavailable: 'Dashboard unavailable'
+  };
+  const badge = document.getElementById('status-engine');
+  badge.dataset.state = state || 'unchecked';
+  badge.title = model;
+  document.getElementById('stat-engine-name').textContent = labels[state] || labels.unchecked;
 }
 
-// ========================================================
-// 3. CONVERSATION & LIVE CHAT
-// ========================================================
 function initChat() {
-  const textInput = document.getElementById('chat-text-input');
-  const sendBtn = document.getElementById('btn-send-chat');
-  const micBtn = document.getElementById('btn-record-chat');
-
-  sendBtn.addEventListener('click', () => sendTextMessage());
-  textInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
+  const input = document.getElementById('chat-text-input');
+  document.getElementById('btn-send-chat').addEventListener('click', sendTextMessage);
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
       sendTextMessage();
     }
   });
+  document.getElementById('btn-record-chat').addEventListener('click', toggleChatRecording);
+}
 
-  micBtn.addEventListener('click', toggleChatRecording);
-
-  const toggleSpeechBtn = document.getElementById('btn-toggle-speech');
-  if (toggleSpeechBtn) {
-    toggleSpeechBtn.addEventListener('click', () => {
-      browserSpeechEnabled = !browserSpeechEnabled;
-      const lbl = document.getElementById('lbl-browser-speech');
-      if (lbl) lbl.textContent = browserSpeechEnabled ? 'Enabled' : 'Disabled';
-      if (!browserSpeechEnabled && 'speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-      }
-    });
-  }
-
-  const speakAgainBtn = document.getElementById('btn-speak-again');
-  if (speakAgainBtn) {
-    speakAgainBtn.addEventListener('click', () => {
-      if (lastAssistantResponseText) speakBrowserText(lastAssistantResponseText);
-    });
-  }
+function lockComposer(locked) {
+  document.getElementById('chat-text-input').disabled = locked;
+  document.getElementById('btn-send-chat').disabled = locked;
+  document.getElementById('btn-record-chat').disabled = locked;
 }
 
 async function sendTextMessage() {
   const input = document.getElementById('chat-text-input');
+  const status = document.getElementById('chat-input-status');
   const text = input.value.trim();
-  if (!text) return;
+  if (input.disabled || isChatRecording || !text) return;
 
-  input.value = '';
-  appendChatMessage('user', text);
-
-  // Loading state placeholder
-  const loadingMsgId = appendChatMessage('assistant', 'Thinking and recalling memories...', true);
-
+  const started = performance.now();
+  lockComposer(true);
+  status.textContent = 'Generating a reply…';
+  resetReplyAudio();
   try {
-    const res = await fetch('/api/chat/message', {
+    const response = await fetch('/api/chat/message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: text })
     });
-    const data = await res.json();
+    const turn = await response.json();
+    if (!response.ok) throw new Error(turn.error || 'Could not generate a reply.');
 
-    const reply = data.response_text || data.error || 'No response generated.';
-    updateAssistantMessage(loadingMsgId, reply);
-    renderRecalledMemories(data.retrieved_memories, data.metrics);
-
-    if (data.audio_url) {
-      playAssistantAudio(data.audio_url, reply, data.tts_is_mock, data.tts_message);
+    input.value = '';
+    appendChatMessage('user', text);
+    const replyId = appendChatMessage('assistant', turn.response_text);
+    renderRecalledMemories(turn.cited_memories, turn.metrics);
+    status.textContent = '';
+    const reply = document.getElementById(replyId).querySelector('.msg-body');
+    if (turn.cited_memories?.length) {
+      const sources = document.createElement('details');
+      sources.className = 'reply-sources';
+      const heading = document.createElement('summary');
+      heading.textContent = 'Memory sources';
+      sources.append(heading, ...turn.cited_memories.map(memoryCard));
+      reply.append(sources);
+    }
+    if (turn.llm_backend === 'mock') {
+      const demoLabel = document.createElement('p');
+      demoLabel.className = 'chat-input-status';
+      demoLabel.textContent = 'Demo reply';
+      reply.append(demoLabel);
+    }
+    if (turn.audio_url) {
+      const audio = {
+        url: turn.audio_url,
+        label: turn.tts_is_mock ? 'Demo chime' : 'Cloned voice'
+      };
+      const replay = document.createElement('button');
+      replay.type = 'button';
+      replay.className = 'btn-secondary reply-replay';
+      replay.textContent = 'Replay';
+      replay.addEventListener('click', () => playReplyAudio(audio, null));
+      reply.append(replay);
+      playReplyAudio(audio, started);
+    } else {
+      const message = turn.tts_message || 'Audio is unavailable for this reply.';
+      document.getElementById('audio-engine-badge').textContent = 'Audio unavailable';
+      document.getElementById('audio-status').textContent = message;
+      const audioNote = document.createElement('p');
+      audioNote.className = 'chat-input-status';
+      audioNote.textContent = message;
+      reply.append(audioNote);
     }
     refreshSystemStatus();
-  } catch (err) {
-    console.error('Chat error:', err);
-    updateAssistantMessage(loadingMsgId, 'Error connecting to local engine. Check terminal server.');
+  } catch (error) {
+    document.getElementById('audio-engine-badge').textContent = 'No new audio';
+    status.textContent = error.message === 'Failed to fetch'
+      ? 'Could not reach Digital Self. Your message is ready to retry.'
+      : error.message;
+    refreshSystemStatus();
+  } finally {
+    lockComposer(false);
+    input.focus();
   }
 }
 
-// In-Browser Microphone Recording for Chat
 async function toggleChatRecording() {
   const micBtn = document.getElementById('btn-record-chat');
   const micLabel = document.getElementById('mic-label');
   const banner = document.getElementById('recording-banner');
   const timer = document.getElementById('recording-timer');
+  const input = document.getElementById('chat-text-input');
+  const status = document.getElementById('chat-input-status');
 
   if (!isChatRecording) {
-    // Start Recording
+    document.getElementById('audio-playback').pause();
+    lockComposer(true);
+    status.textContent = '';
     try {
       chatRecorder = new PcmRecorder();
       await chatRecorder.start();
       isChatRecording = true;
       micBtn.classList.add('recording');
       micLabel.textContent = 'Stop';
+      micBtn.disabled = false;
       banner.classList.remove('hidden');
 
       chatRecordingStartTime = Date.now();
@@ -293,7 +318,8 @@ async function toggleChatRecording() {
 
     } catch (err) {
       if (chatRecorder) { await chatRecorder.stop().catch(() => {}); chatRecorder = null; }
-      alert('Microphone permission denied or not available in browser: ' + err.message);
+      lockComposer(false);
+      status.textContent = 'Microphone unavailable. Allow microphone access or type a message.';
     }
   } else {
     // Stop Recording
@@ -303,47 +329,30 @@ async function toggleChatRecording() {
     banner.classList.add('hidden');
     clearInterval(chatRecordingTimerInterval);
 
+    micBtn.disabled = true;
+    status.textContent = 'Transcribing recording…';
     const recorder = chatRecorder;
     chatRecorder = null;
-    if (!recorder) return;
-    const wavBlob = await recorder.stop(24000);
-    if (!wavBlob) {
-      alert('No audio was captured from the microphone. Please try again.');
-      return;
+    try {
+      const wav = await recorder.stop(24000);
+      if (!wav) throw new Error('No audio captured. Record again or type a message.');
+      const form = new FormData();
+      form.append('audio', wav, 'mic_input.wav');
+      const response = await fetch('/api/chat/transcribe', { method: 'POST', body: form });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not transcribe the recording.');
+      input.value = result.user_text;
+      status.textContent = 'Review the transcript, then send.';
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      lockComposer(false);
+      input.focus();
     }
-    await sendVoiceMessage(wavBlob);
   }
 }
 
-async function sendVoiceMessage(audioBlob) {
-  appendChatMessage('user', '[🎙️ Spoken Voice Message]');
-  const loadingMsgId = appendChatMessage('assistant', 'Transcribing speech & recalling memories...', true);
-
-  const formData = new FormData();
-  formData.append('audio', audioBlob, 'mic_input.wav');
-
-  try {
-    const res = await fetch('/api/chat/voice', {
-      method: 'POST',
-      body: formData
-    });
-    const data = await res.json();
-
-    const reply = data.response_text || data.error || 'No response generated.';
-    updateAssistantMessage(loadingMsgId, reply);
-    renderRecalledMemories(data.retrieved_memories, data.metrics);
-
-    if (data.audio_url) {
-      playAssistantAudio(data.audio_url, reply, data.tts_is_mock, data.tts_message);
-    }
-    refreshSystemStatus();
-  } catch (err) {
-    console.error('Voice turn error:', err);
-    updateAssistantMessage(loadingMsgId, 'Failed to process voice input.');
-  }
-}
-
-function appendChatMessage(role, text, isLoading = false) {
+function appendChatMessage(role, text) {
   const container = document.getElementById('chat-messages');
   const msgId = 'msg-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4);
 
@@ -360,10 +369,10 @@ function appendChatMessage(role, text, isLoading = false) {
     <div class="msg-avatar">${avatarSvg}</div>
     <div class="msg-body">
       <div class="msg-header">
-        <span class="msg-author">${authorName}</span>
+        <span class="msg-author">${escapeHtml(authorName)}</span>
         <span class="msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
       </div>
-      <div class="msg-text ${isLoading ? 'loading-text' : ''}">${escapeHtml(text)}</div>
+      <div class="msg-text">${escapeHtml(text)}</div>
     </div>
   `;
 
@@ -372,87 +381,79 @@ function appendChatMessage(role, text, isLoading = false) {
   return msgId;
 }
 
-function updateAssistantMessage(msgId, newText) {
-  const msg = document.getElementById(msgId);
-  if (msg) {
-    const textEl = msg.querySelector('.msg-text');
-    textEl.classList.remove('loading-text');
-    textEl.textContent = newText;
-  }
-}
-
 function renderRecalledMemories(memories, metrics) {
   const listContainer = document.getElementById('recalled-memories-container');
   const badge = document.getElementById('recalled-count-badge');
   listContainer.innerHTML = '';
 
   if (!memories || memories.length === 0) {
-    listContainer.innerHTML = '<div class="empty-recalled">No specific episodic memories triggered for this query.</div>';
-    badge.textContent = '0 Recalled';
+    listContainer.innerHTML = '<div class="empty-recalled">The reply cited no approved memories.</div>';
+    badge.textContent = '0 cited';
   } else {
-    badge.textContent = `${memories.length} Recalled`;
-    memories.forEach((m, idx) => {
-      const card = document.createElement('div');
-      card.className = 'recalled-card';
-      const cat = m.category || 'General';
-      const score = m.relevance_score ? `Score: ${m.relevance_score}` : '';
-      const snip = (m.content || '').substring(0, 150);
-
-      card.innerHTML = `
-        <div class="recalled-card-header">
-          <span class="recalled-cat">${escapeHtml(cat)}</span>
-          <span style="font-size:0.7rem; color:var(--text-muted);">${score}</span>
-        </div>
-        <div class="recalled-snippet">${escapeHtml(snip)}...</div>
-      `;
-      listContainer.appendChild(card);
-    });
+    badge.textContent = `${memories.length} cited`;
+    listContainer.append(...memories.map(memoryCard));
   }
 
-  // Update metrics
-  if (metrics) {
-    document.getElementById('metric-total-time').textContent = `${metrics.total_sec || 0}s`;
-    document.getElementById('metric-tts-time').textContent = `${metrics.tts_synthesis_sec || 0}s`;
-  }
+  document.getElementById('metric-total-time').textContent =
+    metrics?.total_sec == null ? '-' : `${metrics.total_sec}s`;
+  document.getElementById('metric-tts-time').textContent =
+    metrics?.tts_synthesis_sec == null ? '-' : `${metrics.tts_synthesis_sec}s`;
 }
 
-function playAssistantAudio(audioUrl, responseText = '', isMock = false, engineMsg = '') {
-  lastAssistantResponseText = responseText;
+function memoryCard(memory) {
+  const card = document.createElement('div');
+  card.className = 'recalled-card';
+  const name = memory.metadata?.slug?.replaceAll('_', ' ') || memory.category || 'General';
+  card.innerHTML = `
+    <div class="recalled-card-header">
+      <span class="recalled-cat">${escapeHtml(name)}</span>
+      <span>${escapeHtml(memory.citation)}</span>
+    </div>
+    <div class="recalled-snippet">${escapeHtml(memory.content)}</div>
+  `;
+  return card;
+}
+
+function resetReplyAudio() {
   const player = document.getElementById('audio-playback');
-  const badge = document.getElementById('audio-engine-badge');
-  const banner = document.getElementById('tts-fallback-banner');
-  const speakAgainBtn = document.getElementById('btn-speak-again');
+  player.onplaying = null;
+  player.onerror = null;
+  player.pause();
+  player.removeAttribute('src');
+  player.load();
+  player.hidden = true;
+  document.getElementById('metric-playback-time').textContent = '-';
+  document.getElementById('audio-engine-badge').textContent = 'Waiting';
+  document.getElementById('audio-status').textContent = '';
+}
 
-  if (speakAgainBtn) {
-    speakAgainBtn.style.display = responseText ? 'inline-block' : 'none';
-  }
-
-  if (isMock) {
-    if (badge) {
-      badge.textContent = 'Demo Chime + Browser Voice';
-      badge.style.color = '#fbbf24';
-      badge.style.background = 'rgba(245,158,11,0.15)';
+function playReplyAudio(audio, started) {
+  const player = document.getElementById('audio-playback');
+  const status = document.getElementById('audio-status');
+  status.textContent = '';
+  player.onplaying = () => {
+    status.textContent = '';
+    if (started !== null) {
+      document.getElementById('metric-playback-time').textContent =
+        `${((performance.now() - started) / 1000).toFixed(2)}s`;
     }
-    if (banner) {
-      banner.classList.remove('hidden');
-    }
-    // Speak response via browser TTS so user actually hears spoken words
-    speakBrowserText(responseText);
+    player.onplaying = null;
+  };
+  player.onerror = () => { status.textContent = 'Could not load the reply audio.'; };
+  player.hidden = false;
+  document.getElementById('audio-engine-badge').textContent = audio.label;
+  if (player.getAttribute('src') === audio.url) {
+    player.currentTime = 0;
   } else {
-    if (badge) {
-      badge.textContent = '✓ Neural XTTS-v2 Voice';
-      badge.style.color = 'var(--accent-emerald)';
-      badge.style.background = 'rgba(16,185,129,0.15)';
-    }
-    if (banner) {
-      banner.classList.add('hidden');
-    }
+    player.src = audio.url;
   }
-
-  if (player && audioUrl) {
-    player.src = audioUrl;
-    player.play().catch(e => console.log('Autoplay policy caught:', e));
-  }
+  player.play().catch((error) => {
+    if (error.name !== 'AbortError' && player.getAttribute('src') === audio.url) {
+      status.textContent = error.name === 'NotAllowedError'
+        ? 'Press Play to hear the reply.'
+        : 'Could not play the reply audio.';
+    }
+  });
 }
 
 // ========================================================
@@ -528,6 +529,7 @@ function selectQuestion(idx) {
 
   const input = document.getElementById('interview-answer-input');
   input.value = q.answer || '';
+  document.getElementById('interview-chat-approval').checked = !!q.approved_for_chat;
 
   const saveStatus = document.getElementById('save-status-indicator');
   saveStatus.textContent = q.answered ? 'Saved' : 'Unsaved';
@@ -539,6 +541,7 @@ async function saveActiveQuestion() {
   if (!q) return;
 
   const answer = document.getElementById('interview-answer-input').value.trim();
+  const approved = !!answer && document.getElementById('interview-chat-approval').checked;
   const saveStatus = document.getElementById('save-status-indicator');
   saveStatus.textContent = 'Saving...';
 
@@ -550,13 +553,15 @@ async function saveActiveQuestion() {
         slug: q.slug,
         category: q.category,
         question: q.question,
-        answer: answer
+        answer: answer,
+        approved_for_chat: approved
       })
     });
     const result = await res.json();
     if (result.success) {
       q.answer = answer;
       q.answered = !!answer;
+      q.approved_for_chat = approved;
       saveStatus.textContent = 'Saved!';
       saveStatus.style.color = 'var(--accent-emerald)';
       renderQuestionsList();
@@ -572,7 +577,7 @@ async function saveActiveQuestion() {
 // 5. VOICE STUDIO TAB
 // ========================================================
 function initVoiceStudio() {
-  // Voice prompts setup
+  document.getElementById('voice-reference-form').addEventListener('submit', saveVoiceReferences);
 }
 
 async function loadPrompts() {
@@ -582,8 +587,63 @@ async function loadPrompts() {
     voicePrompts = await res.json();
     renderPromptsGrid();
     loadMasterAudio();
+    loadVoiceReferences();
   } catch (err) {
     console.error('Failed to load prompts:', err);
+  }
+}
+
+async function loadVoiceReferences() {
+  const options = document.getElementById('voice-reference-options');
+  const status = document.getElementById('voice-reference-status');
+  const save = document.querySelector('#voice-reference-form button');
+  save.disabled = true;
+  try {
+    const response = await fetch('/api/voice/references');
+    if (!response.ok) throw new Error('Could not load voice references.');
+    const data = await response.json();
+    options.replaceChildren();
+    for (const name of data.available) {
+      const label = document.createElement('label');
+      label.className = 'choice-field';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.value = name;
+      box.checked = data.selected.includes(name);
+      label.append(box, name);
+      options.append(label);
+    }
+    const missing = data.selected.filter((name) => !data.available.includes(name));
+    status.textContent = missing.length ? `Selected outside this list: ${missing.join(', ')}` : '';
+    if (!data.available.length && !missing.length) {
+      status.textContent = 'Record a sample to add a voice reference.';
+    }
+    save.disabled = !data.available.length && !data.has_local_selection;
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function saveVoiceReferences(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector('button');
+  const status = document.getElementById('voice-reference-status');
+  const selected = Array.from(form.querySelectorAll('input:checked'), (box) => box.value);
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/voice/references', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selected })
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Could not save voice references.');
+    status.textContent = result.selected.length ? 'Voice references saved.' : 'Voice references cleared.';
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -708,6 +768,7 @@ async function togglePromptRecording(promptId) {
       audioPrev.style.display = 'block';
       recBtn.textContent = 'Re-Record';
       loadMasterAudio();
+      loadVoiceReferences();
       refreshSystemStatus();
     } else {
       recBtn.textContent = '🎙️ Record Sample';
@@ -854,6 +915,7 @@ async function loadPersona() {
     document.getElementById('persona-phrases').value = (p.lexicon?.favorite_phrases || []).join(', ');
     document.getElementById('persona-avoid').value = (p.lexicon?.avoid_words || []).join(', ');
     document.getElementById('persona-constraints').value = (p.communication_style?.spoken_constraints || []).join('\n');
+    document.getElementById('persona-approved-replies').value = (p.communication_style?.approved_replies || []).join('\n');
 
     const twinName = p.identity?.name || 'Digital Twin';
     const twinEl = document.getElementById('chat-twin-name');
@@ -875,7 +937,8 @@ async function savePersona() {
     agreeableness: document.getElementById('persona-agreeableness').value.trim(),
     favorite_phrases: document.getElementById('persona-phrases').value.split(',').map(s => s.trim()).filter(Boolean),
     avoid_words: document.getElementById('persona-avoid').value.split(',').map(s => s.trim()).filter(Boolean),
-    spoken_constraints: document.getElementById('persona-constraints').value.split('\n').map(s => s.trim()).filter(Boolean)
+    spoken_constraints: document.getElementById('persona-constraints').value.split('\n').map(s => s.trim()).filter(Boolean),
+    approved_replies: document.getElementById('persona-approved-replies').value.split('\n').map(s => s.trim()).filter(Boolean)
   };
 
   try {
@@ -885,6 +948,7 @@ async function savePersona() {
       body: JSON.stringify(payload)
     });
     const result = await res.json();
+    if (!res.ok || !result.success) throw new Error(result.error || 'Could not save persona.');
     btn.textContent = 'Saved!';
     const twinName = payload.name || 'Digital Twin';
     const twinEl = document.getElementById('chat-twin-name');

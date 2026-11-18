@@ -63,6 +63,7 @@ class MemoryStore:
             # Extract frontmatter if present
             category = "general"
             slug = md_file.stem
+            approved = False
             if raw_text.startswith("---"):
                 parts = raw_text.split("---", 2)
                 if len(parts) >= 3:
@@ -73,16 +74,24 @@ class MemoryStore:
                             category = line.split(":", 1)[1].strip().strip('"\'')
                         elif line.startswith("slug:"):
                             slug = line.split(":", 1)[1].strip().strip('"\'')
+                        elif line == "approved_for_chat: true":
+                            approved = True
                 else:
                     body = raw_text
             else:
                 body = raw_text
 
+            marker = "## My Personal Memory & Reflections"
+            if marker in body:
+                body = body.split(marker, 1)[1].strip()
             self.add_document(
                 doc_id=f"bio_{slug}",
                 content=body,
                 category=category,
-                metadata={"source_file": str(md_file), "slug": slug},
+                metadata={
+                    "source_file": str(md_file), "slug": slug, "source": "interview",
+                    "approved_for_chat": approved and bool(body) and not md_file.name.endswith(".example.md"),
+                },
             )
             count += 1
 
@@ -118,7 +127,9 @@ class MemoryStore:
 
         return score
 
-    def query(self, query_text: str, top_k: int = 4, category_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+    def query(
+        self, query_text: str, top_k: int = 4, category_filter: Optional[str] = None, *, approved_only: bool = False
+    ) -> List[Dict[str, Any]]:
         """Queries the memory database using semantic BM25 score and returns the top_k most relevant memories."""
         if not self.documents:
             return []
@@ -129,9 +140,16 @@ class MemoryStore:
             if not candidates:
                 return []
 
+        if approved_only:
+            candidates = [
+                doc for doc in candidates
+                if doc.get("metadata", {}).get("approved_for_chat") is True
+                and doc["metadata"].get("source") == "interview"
+                and Path(doc["metadata"].get("source_file", "")).is_file()
+            ]
         q_tokens = self._tokenize(query_text)
         if not q_tokens:
-            return candidates[:top_k]
+            return [] if approved_only else candidates[:top_k]
 
         all_doc_tokens = [self._tokenize(d["content"]) for d in candidates]
         avg_dl = sum(len(t) for t in all_doc_tokens) / max(len(all_doc_tokens), 1)

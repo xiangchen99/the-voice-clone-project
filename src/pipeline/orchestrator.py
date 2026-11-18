@@ -1,16 +1,19 @@
 """End-to-end voice-to-voice conversation orchestrator."""
 
+import re
 import time
+from threading import Lock
+from uuid import uuid4
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 import yaml
 
-from src.asr.transcriber import SpeechTranscriber
-from src.brain.llm_client import LocalLLMClient
+from src.asr.transcriber import InvalidRecording, SpeechTranscriber
+from src.brain.llm_client import GenerationError, LocalLLMClient
 from src.brain.prompt_builder import PromptBuilder
 from src.memory.retriever import MemoryRetriever
 from src.memory.store import MemoryStore
-from src.voice.tts_engine import BaseTTSEngine, get_tts_engine
+from src.voice.tts_engine import BaseTTSEngine, ReferenceAudio, SynthesisError, get_tts_engine
 
 
 class DigitalSelfOrchestrator:
@@ -52,7 +55,11 @@ class DigitalSelfOrchestrator:
             engine_name=tts_cfg.get("engine_name", tts_cfg.get("engine", "xtts_v2")),
             device=self.settings.get("hardware", {}).get("device", "cuda"),
         )
-        self.default_ref_audio = tts_cfg.get("reference_audio_path", "data/audio/reference/master_ref.wav")
+        self.default_ref_audio = tts_cfg.get("reference_audio_path") or []
+        self.tts_options = {
+            key: tts_cfg[key] for key in ("language", "temperature", "speed") if key in tts_cfg
+        }
+        self.turn_lock = Lock()
 
         self.chat_history: List[Dict[str, str]] = []
 
@@ -67,83 +74,96 @@ class DigitalSelfOrchestrator:
     def process_text_turn(
         self,
         user_text: str,
-        reference_audio_path: Optional[str] = None,
+        reference_audio_path: Optional[ReferenceAudio] = None,
         output_audio_path: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Processes a text input turn: recalls memories, queries LLM, and synthesizes clone voice."""
-        t_start = time.time()
-        ref_audio = reference_audio_path or self.default_ref_audio
-        out_audio = output_audio_path or f"data/audio/response_{int(time.time())}.wav"
+        """Generate a real or explicitly configured demo reply and attempt audio."""
+        with self.turn_lock:
+            started = time.perf_counter()
+            memories = self.memory_retriever.retrieve_memories_raw(user_text, approved_only=True)
+            system_prompt = self.prompt_builder.build_system_prompt(self.memory_retriever.format_context(memories))
+            recalled = time.perf_counter()
+            reply = self.llm_client.generate_response(system_prompt, user_text, chat_history=self.chat_history)
+            generated = time.perf_counter()
 
-        # 1. Retrieve autobiographical memories
-        t_mem_start = time.time()
-        memory_context = self.memory_retriever.retrieve_context(user_text)
-        recalled_raw = self.memory_retriever.retrieve_memories_raw(user_text)
-        t_mem = time.time() - t_mem_start
+            if self.llm_client.backend == "mock":
+                memories = []
+            labels = {f"M{number}" for number in range(1, len(memories) + 1)}
+            cited_labels = labels.intersection(re.findall(r"\[(M[0-9]+)\]", reply))
+            cited = [
+                {**memory, "citation": f"M{number}"}
+                for number, memory in enumerate(memories, 1) if f"M{number}" in cited_labels
+            ]
+            reply = re.sub(
+                r"\[(M[0-9]+)\]",
+                lambda match: match[0] if match[1] in labels else "",
+                reply,
+            ).strip()
+            reply_without_citations = re.sub(r"\s*\[M[0-9]+\]", "", reply).strip()
+            if not reply_without_citations:
+                raise GenerationError("The language model returned an empty reply. Try sending again.")
+            spoken_text = self.prompt_builder.sanitize_for_tts(reply_without_citations)
+            self.chat_history.extend((
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": reply_without_citations},
+            ))
 
-        # 2. Build system prompt
-        system_prompt = self.prompt_builder.build_system_prompt(memory_context)
+            audio_file = None
+            audio_error = ""
+            tts_status = self.tts_engine.get_status()
+            try:
+                if not spoken_text:
+                    raise SynthesisError("This reply has no text to speak.")
+                audio_file = self.tts_engine.synthesize(
+                    text=spoken_text,
+                    reference_audio_path=(
+                        self.default_ref_audio if reference_audio_path is None else reference_audio_path
+                    ),
+                    output_path=output_audio_path or f"data/audio/response_{uuid4().hex}.wav",
+                    **self.tts_options,
+                )
+            except SynthesisError as exc:
+                audio_error = str(exc)
+            except OSError:
+                audio_error = "Could not save the generated audio."
+            finished = time.perf_counter()
 
-        # 3. Query LLM Persona
-        t_llm_start = time.time()
-        raw_response = self.llm_client.generate_response(
-            system_prompt=system_prompt,
-            user_message=user_text,
-            chat_history=self.chat_history,
-        )
-        t_llm = time.time() - t_llm_start
-
-        # 4. Clean text for natural speech
-        spoken_text = self.prompt_builder.sanitize_for_tts(raw_response)
-
-        # 5. Synthesize cloned voice
-        t_tts_start = time.time()
-        audio_file = self.tts_engine.synthesize(
-            text=spoken_text,
-            reference_audio_path=ref_audio,
-            output_path=out_audio,
-        )
-        t_tts = time.time() - t_tts_start
-
-        # 6. Update conversation history
-        self.chat_history.append({"role": "user", "content": user_text})
-        self.chat_history.append({"role": "assistant", "content": spoken_text})
-
-        total_time = time.time() - t_start
-        tts_status = getattr(self.tts_engine, "get_status", lambda: {"name": "unknown", "is_mock": True, "message": ""})()
-
-        return {
-            "user_text": user_text,
-            "response_text": spoken_text,
-            "audio_path": audio_file,
-            "retrieved_memories": recalled_raw,
-            "tts_engine": tts_status.get("name", "unknown"),
-            "tts_is_mock": tts_status.get("is_mock", True),
-            "tts_message": tts_status.get("message", ""),
-            "metrics": {
-                "memory_retrieval_sec": round(t_mem, 3),
-                "llm_generation_sec": round(t_llm, 3),
-                "tts_synthesis_sec": round(t_tts, 3),
-                "total_sec": round(total_time, 3),
-            },
-        }
+            return {
+                "user_text": user_text,
+                "response_text": reply,
+                "llm_backend": self.llm_client.backend,
+                "audio_path": audio_file,
+                "retrieved_memories": memories,
+                "cited_memories": cited,
+                "tts_engine": tts_status["name"] if audio_file else None,
+                "tts_is_mock": bool(audio_file and tts_status["is_mock"]),
+                "tts_message": audio_error,
+                "metrics": {
+                    "memory_retrieval_sec": round(recalled - started, 3),
+                    "llm_generation_sec": round(generated - recalled, 3),
+                    "tts_synthesis_sec": round(finished - generated, 3),
+                    "total_sec": round(finished - started, 3),
+                },
+            }
 
     def process_audio_turn(
         self,
         input_audio_path: Union[str, Path],
-        reference_audio_path: Optional[str] = None,
+        reference_audio_path: Optional[ReferenceAudio] = None,
     ) -> Dict[str, Any]:
-        """Processes an audio input turn: transcribes speech, queries LLM, and responds with cloned voice."""
-        t_asr_start = time.time()
+        """Transcribe a WAV, then process the recognized text."""
+        started = time.perf_counter()
         user_text = self.transcriber.transcribe(input_audio_path)
-        t_asr = time.time() - t_asr_start
-
+        if not user_text:
+            raise InvalidRecording("No speech detected. Record again or type a message.")
+        asr_seconds = time.perf_counter() - started
         result = self.process_text_turn(user_text, reference_audio_path=reference_audio_path)
-        result["metrics"]["asr_transcription_sec"] = round(t_asr, 3)
-        result["metrics"]["total_sec"] = round(result["metrics"]["total_sec"] + t_asr, 3)
+        result["metrics"]["asr_transcription_sec"] = round(asr_seconds, 3)
+        result["metrics"]["total_sec"] = round(result["metrics"]["total_sec"] + asr_seconds, 3)
         return result
 
     def clear_history(self) -> None:
         """Resets the active conversation history."""
-        self.chat_history = []
+        with self.turn_lock:
+            self.chat_history.clear()
 

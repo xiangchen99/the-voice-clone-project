@@ -1,8 +1,17 @@
 """Speech-to-text transcriber using faster-whisper."""
 
-import os
+import wave
 from pathlib import Path
-from typing import Optional, Union
+from threading import Lock
+from typing import Union
+
+
+class InvalidRecording(ValueError):
+    """The input is not a readable microphone WAV."""
+
+
+class TranscriptionError(RuntimeError):
+    """The speech recognizer failed to transcribe a recording."""
 
 
 class SpeechTranscriber:
@@ -18,45 +27,45 @@ class SpeechTranscriber:
         self.device = device
         self.compute_type = compute_type
         self.model = None
-
-    def _lazy_init(self) -> None:
-        """Initializes Whisper model on first use."""
-        if self.model is None:
-            try:
-                from faster_whisper import WhisperModel
-                self.model = WhisperModel(
-                    self.model_size,
-                    device=self.device,
-                    compute_type=self.compute_type,
-                )
-            except Exception as e:
-                # If CUDA is requested but fails (e.g. CPU test or missing CUDA libs), try CPU
-                try:
-                    from faster_whisper import WhisperModel
-                    self.model = WhisperModel(
-                        self.model_size,
-                        device="cpu",
-                        compute_type="int8",
-                    )
-                except Exception:
-                    self.model = None
+        self.lock = Lock()
 
     def transcribe(self, audio_path: Union[str, Path]) -> str:
-        """Transcribes an audio file into plain text."""
-        audio_p = str(audio_path)
-        if not os.path.exists(audio_p):
-            raise FileNotFoundError(f"Audio file not found: {audio_p}")
-
-        self._lazy_init()
-        if self.model is None:
-            # Fallback for environments without whisper binaries
-            return "Hello, tell me about yourself and what you think about technology."
+        """Return a transcript, or an empty string when no speech was detected."""
+        audio_path = Path(audio_path)
+        try:
+            with wave.open(str(audio_path), "rb") as wav:
+                frames = wav.readframes(wav.getnframes())
+                if not frames or (wav.getsampwidth() > 1 and not any(frames)):
+                    return ""
+        except (EOFError, wave.Error) as exc:
+            raise InvalidRecording("Could not read the recording. Record again or type a message.") from exc
 
         try:
-            segments, _ = self.model.transcribe(audio_p, beam_size=5)
-            text_parts = [segment.text.strip() for segment in segments]
-            result = " ".join(text_parts).strip()
-            return result or "Hello, tell me about yourself and what you think about technology."
-        except Exception:
-            return "Hello, tell me about yourself and what you think about technology."
+            from faster_whisper import WhisperModel
+        except ImportError as exc:
+            raise TranscriptionError("Speech recognition is unavailable. Install faster-whisper or type a message.") from exc
 
+        with self.lock:
+            try:
+                if self.model is None:
+                    self.model = WhisperModel(self.model_size, device=self.device, compute_type=self.compute_type)
+                return self._read_segments(audio_path)
+            except Exception as exc:
+                self.model = None
+                if self.device != "cuda":
+                    raise TranscriptionError("Speech recognition is unavailable. Try again or type a message.") from exc
+                try:
+                    self.model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
+                    result = self._read_segments(audio_path)
+                    self.device = "cpu"
+                    self.compute_type = "int8"
+                    return result
+                except Exception as fallback_error:
+                    self.model = None
+                    raise TranscriptionError(
+                        "Speech recognition is unavailable. Try again or type a message."
+                    ) from fallback_error
+
+    def _read_segments(self, audio_path: Path) -> str:
+        segments, _ = self.model.transcribe(str(audio_path), beam_size=5, vad_filter=True)
+        return " ".join(text for segment in segments if (text := segment.text.strip()))

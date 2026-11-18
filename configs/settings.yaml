@@ -26,7 +26,7 @@ memory:
   relevance_threshold: 0.65
 
 llm:
-  backend: "ollama"         # "ollama" or "llama_cpp" or "openai_compatible"
+  backend: "ollama"         # "ollama", "llama_cpp", "openai_compatible", or explicit "mock" demo mode
   endpoint_url: "http://127.0.0.1:11434"
   model_name: "llama3.1:8b" # or qwen2.5:14b / qwen2.5:7b
   temperature: 0.75
@@ -35,7 +35,8 @@ llm:
   stream: true
 
 tts:
-  engine: "xtts_v2"         # "xtts_v2" or "f5_tts" or "mock"
+  engine: "xtts_v2"         # "xtts_v2" or explicit "mock" demo mode
+  # A single WAV path or list of paths. Voice Studio can override this selection.
   reference_audio_path: "data/audio/reference/master_ref.wav"
   language: "en"
   temperature: 0.75

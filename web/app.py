@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import gradio as gr
 
+from src.asr.transcriber import InvalidRecording, TranscriptionError
+from src.brain.llm_client import GenerationError
 from src.audio.prompts import RECORDING_PROMPTS
 from src.audio.recorder import VoiceRecorder
 from src.memory.chat_parser import ChatLogParser
@@ -29,12 +31,15 @@ def create_app() -> gr.Blocks:
         if not mic_audio and not text_input.strip():
             return chat_history, None, "Please provide audio input or type a message."
 
-        if mic_audio:
-            result = orchestrator.process_audio_turn(mic_audio)
-            user_msg = f"[Spoken] {result['user_text']}"
-        else:
-            result = orchestrator.process_text_turn(text_input)
-            user_msg = result["user_text"]
+        try:
+            if mic_audio:
+                result = orchestrator.process_audio_turn(mic_audio)
+                user_msg = f"[Spoken] {result['user_text']}"
+            else:
+                result = orchestrator.process_text_turn(text_input)
+                user_msg = result["user_text"]
+        except (InvalidRecording, TranscriptionError, GenerationError) as exc:
+            return chat_history, None, str(exc)
 
         bot_reply = result["response_text"]
         audio_out = result["audio_path"]
@@ -51,6 +56,8 @@ def create_app() -> gr.Blocks:
         metrics = result.get("metrics", {})
         metric_str = f"Response Time: {metrics.get('total_sec', 0)}s (LLM: {metrics.get('llm_generation_sec', 0)}s, TTS: {metrics.get('tts_synthesis_sec', 0)}s)\nRecalled Memories:\n{mem_display}"
 
+        if result.get("tts_message"):
+            metric_str += "\n" + result["tts_message"]
         return chat_history, audio_out, metric_str
 
     def add_memory(category: str, title: str, content: str) -> str:

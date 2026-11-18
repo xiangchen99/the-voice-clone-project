@@ -9,6 +9,7 @@ import datetime
 import os
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Dict, List
 
 QUESTIONS: List[Dict[str, str]] = [
@@ -75,16 +76,20 @@ QUESTIONS: List[Dict[str, str]] = [
 ]
 
 
-def save_memory_card(category: str, slug: str, question: str, answer: str, output_dir: Path) -> Path:
+def save_memory_card(
+    category: str, slug: str, question: str, answer: str, output_dir: Path, approved_for_chat: bool = False
+) -> Path:
     """Saves an autobiographical memory entry as structured Markdown."""
     output_dir.mkdir(parents=True, exist_ok=True)
     file_path = output_dir / f"{slug}.md"
     timestamp = datetime.datetime.now().isoformat()
 
+    approval = "true" if approved_for_chat else "false"
     content = f"""---
 category: "{category}"
 slug: "{slug}"
 date_recorded: "{timestamp}"
+approved_for_chat: {approval}
 ---
 
 # {category}: {slug.replace('_', ' ').title()}
@@ -95,8 +100,10 @@ date_recorded: "{timestamp}"
 ## My Personal Memory & Reflections
 {answer}
 """
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(content)
+    with TemporaryDirectory(dir=output_dir) as temp:
+        candidate = Path(temp) / file_path.name
+        candidate.write_text(content, encoding="utf-8")
+        candidate.replace(file_path)
 
     return file_path
 

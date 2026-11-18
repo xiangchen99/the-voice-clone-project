@@ -4,23 +4,32 @@ import email
 import http.server
 import json
 import mimetypes
-import os
 import re
 import socketserver
 import tempfile
 import time
 import urllib.parse
+from copy import deepcopy
 from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
 from scripts.guided_interview import QUESTIONS, save_memory_card
+from src.asr.transcriber import InvalidRecording, TranscriptionError
 from src.audio.preprocessor import AudioPreprocessor
 from src.audio.prompts import RECORDING_PROMPTS
 from src.audio.recorder import VoiceRecorder
+from src.brain.llm_client import GenerationError
+from src.brain.prompt_builder import LOCAL_PERSONA_PATH
 from src.memory.chat_parser import ChatLogParser
 from src.pipeline.orchestrator import DigitalSelfOrchestrator
+from src.voice.tts_engine import ReferenceAudio
+
+
+VOICE_REFERENCE_DIR = Path("data/audio/reference")
+VOICE_REFERENCE_SELECTION = VOICE_REFERENCE_DIR / "selection.json"
 
 
 class DigitalSelfServer:
@@ -31,6 +40,7 @@ class DigitalSelfServer:
         self.orchestrator = DigitalSelfOrchestrator(settings_path=settings_path)
         self.recorder = VoiceRecorder()
         self.preprocessor = AudioPreprocessor()
+        self.interview_write_lock = Lock()
         # Ensure memory store loads existing biography cards on boot
         self.orchestrator.memory_store.load_biography_directory("data/biography")
 
@@ -54,6 +64,7 @@ class DigitalSelfServer:
             "memories_count": memories,
             "voice_samples_count": voice_count,
             "llm_model": llm_cfg.get("model_name", "llama3.1:8b"),
+            "llm_status": self.orchestrator.llm_client.get_status(),
             "tts_engine": tts_status.get("name", tts_cfg.get("engine", "xtts_v2")),
             "tts_is_mock": tts_status.get("is_mock", True),
             "tts_ready": tts_status.get("ready", False),
@@ -69,11 +80,14 @@ class DigitalSelfServer:
             card_path = bio_dir / f"{slug}.md"
             answer = ""
             answered = False
+            approved = False
 
             if card_path.exists():
                 try:
                     with open(card_path, "r", encoding="utf-8") as f:
                         raw = f.read()
+                    parts = raw.split("---", 2)
+                    approved = len(parts) == 3 and parts[0] == "" and "approved_for_chat: true" in parts[1].splitlines()
                     if "## My Personal Memory & Reflections" in raw:
                         answer = raw.split("## My Personal Memory & Reflections", 1)[1].strip()
                         answered = bool(answer)
@@ -89,20 +103,28 @@ class DigitalSelfServer:
                 "question": q["question"],
                 "answer": answer,
                 "answered": answered,
+                "approved_for_chat": approved and answered,
             })
         return out
 
-    def save_interview_card(self, slug: str, category: str, question: str, answer: str) -> Dict[str, Any]:
+    def save_interview_card(
+        self, slug: str, category: str, question: str, answer: str, approved_for_chat: bool = False
+    ) -> Dict[str, Any]:
         """Saves memory card and updates memory store."""
+        if not isinstance(slug, str) or not re.fullmatch(r"[a-z0-9_]+", slug):
+            raise ValueError("Select a valid interview question.")
         bio_dir = Path("data/biography")
-        save_memory_card(category, slug, question, answer, bio_dir)
-        # Update memory store
-        self.orchestrator.memory_store.add_document(
-            doc_id=f"bio_{slug}",
-            content=answer,
-            category=category,
-            metadata={"slug": slug, "source": "interview"},
-        )
+        with self.interview_write_lock:
+            card = save_memory_card(category, slug, question, answer, bio_dir, approved_for_chat)
+            self.orchestrator.memory_store.add_document(
+                doc_id=f"bio_{slug}",
+                content=answer,
+                category=category,
+                metadata={
+                    "slug": slug, "source": "interview", "source_file": str(card),
+                    "approved_for_chat": approved_for_chat and bool(answer.strip()),
+                },
+            )
         return {"success": True, "slug": slug}
 
     def get_voice_prompts(self) -> List[Dict[str, Any]]:
@@ -145,40 +167,67 @@ class DigitalSelfServer:
                     pass
             return {"success": False, "error": str(e)}
 
+    def selected_voice_references(self) -> ReferenceAudio:
+        if VOICE_REFERENCE_SELECTION.is_file():
+            names = json.loads(VOICE_REFERENCE_SELECTION.read_text(encoding="utf-8"))
+            return [VOICE_REFERENCE_DIR / name for name in names]
+        return self.orchestrator.default_ref_audio
+
+    def get_voice_references(self) -> Dict[str, Any]:
+        chosen = self.selected_voice_references()
+        if isinstance(chosen, (str, Path)):
+            chosen = [chosen]
+        return {
+            "available": sorted(
+                path.name for path in VOICE_REFERENCE_DIR.glob("*.wav")
+                if path.is_file() and (path.name == "master_ref.wav" or path.name.endswith("_normalized.wav"))
+            ),
+            "selected": [Path(path).name for path in chosen],
+            "has_local_selection": VOICE_REFERENCE_SELECTION.is_file(),
+        }
+
+    def save_voice_references(self, names: object) -> Dict[str, Any]:
+        available = set(self.get_voice_references()["available"])
+        if not isinstance(names, list) or any(not isinstance(name, str) or name not in available for name in names):
+            raise ValueError("Select WAV files from the Voice Studio list.")
+        VOICE_REFERENCE_DIR.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=VOICE_REFERENCE_DIR) as temp:
+            candidate = Path(temp) / "selection.json"
+            candidate.write_text(json.dumps(list(dict.fromkeys(names))), encoding="utf-8")
+            candidate.replace(VOICE_REFERENCE_SELECTION)
+        return self.get_voice_references()
+
     def chat_message(self, message: str) -> Dict[str, Any]:
-        """Runs a text conversational turn."""
-        turn = self.orchestrator.process_text_turn(message)
-        # Convert audio_path to web-accessible URL
-        audio_name = Path(turn["audio_path"]).name
-        turn["audio_url"] = f"/api/audio/{audio_name}"
+        """Runs a text turn and exposes the audio URL when synthesis succeeds."""
+        turn = self.orchestrator.process_text_turn(message, reference_audio_path=self.selected_voice_references())
+        audio = turn["audio_path"]
+        turn["audio_url"] = f"/api/audio/{Path(audio).name}" if audio else None
         return turn
 
-    def chat_voice(self, audio_bytes: bytes) -> Dict[str, Any]:
-        """Runs a voice conversational turn from uploaded microphone audio."""
+    def transcribe(self, audio_bytes: bytes) -> Dict[str, Any]:
+        """Transcribes uploaded microphone audio without mutating conversation state."""
         if not audio_bytes:
-            return {
-                "user_text": "",
-                "response_text": "No audio was captured. Please try recording again.",
-                "audio_path": "",
-                "retrieved_memories": [],
-                "metrics": {},
-            }
+            raise InvalidRecording("No audio was captured. Record again or type a message.")
+        started = time.perf_counter()
+        with tempfile.TemporaryDirectory() as temp:
+            recording = Path(temp) / "microphone.wav"
+            recording.write_bytes(audio_bytes)
+            user_text = self.orchestrator.transcriber.transcribe(recording)
+        if not user_text:
+            raise InvalidRecording("No speech detected. Record again or type a message.")
+        return {
+            "user_text": user_text,
+            "asr_transcription_sec": round(time.perf_counter() - started, 3),
+        }
 
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp.write(audio_bytes)
-            tmp_path = tmp.name
-
-        try:
-            turn = self.orchestrator.process_audio_turn(tmp_path)
-            audio_name = Path(turn["audio_path"]).name
-            turn["audio_url"] = f"/api/audio/{audio_name}"
-            return turn
-        finally:
-            if os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
+    def chat_voice(self, audio_bytes: bytes) -> Dict[str, Any]:
+        """Transcribes and sends audio for clients using the combined endpoint."""
+        transcript = self.transcribe(audio_bytes)
+        turn = self.chat_message(transcript["user_text"])
+        metrics = turn["metrics"]
+        metrics["asr_transcription_sec"] = transcript["asr_transcription_sec"]
+        metrics["total_sec"] = round(metrics["total_sec"] + metrics["asr_transcription_sec"], 3)
+        return turn
 
     def import_chat(self, text: str, author: str) -> Dict[str, Any]:
         """Imports and analyzes chat logs."""
@@ -206,9 +255,14 @@ class DigitalSelfServer:
         return self.orchestrator.prompt_builder.persona
 
     def save_persona(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Updates persona configuration in configs/persona.yaml."""
-        p_path = Path("configs/persona.yaml")
-        existing = self.get_persona()
+        """Saves the dashboard persona to the local override."""
+        examples = data.get("approved_replies")
+        if "approved_replies" in data and (
+            not isinstance(examples, list) or any(not isinstance(reply, str) for reply in examples)
+        ):
+            raise ValueError("Approved replies must be a list of text examples.")
+        p_path = LOCAL_PERSONA_PATH
+        existing = deepcopy(self.get_persona())
 
         existing.setdefault("identity", {})["name"] = data.get("name", existing.get("identity", {}).get("name", "User"))
         existing["identity"]["full_name"] = data.get("full_name", existing["identity"]["name"])
@@ -230,8 +284,15 @@ class DigitalSelfServer:
         if "spoken_constraints" in data:
             existing.setdefault("communication_style", {})["spoken_constraints"] = data["spoken_constraints"]
 
-        with open(p_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(existing, f, sort_keys=False)
+        if examples is not None:
+            existing.setdefault("communication_style", {})["approved_replies"] = [
+                reply.strip() for reply in examples if reply.strip()
+            ]
+
+        with tempfile.TemporaryDirectory(dir=p_path.parent) as temp:
+            candidate = Path(temp) / p_path.name
+            candidate.write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
+            candidate.replace(p_path)
 
         # Reload prompt builder
         self.orchestrator.prompt_builder = type(self.orchestrator.prompt_builder)(config_path=str(p_path))
@@ -425,6 +486,10 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(server.orchestrator.memory_store.documents)
             return
 
+        if path == "/api/voice/references":
+            self._send_json(server.get_voice_references())
+            return
+
         if path == "/api/persona":
             self._send_json(server.get_persona())
             return
@@ -435,6 +500,12 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         """Handles POST REST API requests with top-level error protection."""
         try:
             self._handle_post()
+        except (GenerationError, TranscriptionError) as exc:
+            self._send_json({"error": str(exc)}, status=503)
+        except InvalidRecording as exc:
+            self._send_json({"error": str(exc)}, status=422)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
         except Exception as exc:
             self._send_json({"success": False, "error": str(exc)}, status=500)
 
@@ -448,21 +519,25 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/chat/message":
             body = self._read_body_json()
-            msg = body.get("message", "")
-            turn = server.chat_message(msg)
+            message = body.get("message", "")
+            if not isinstance(message, str) or not message.strip():
+                raise ValueError("Enter a message before sending.")
+            turn = server.chat_message(message.strip())
             self._send_json(turn)
             return
 
-        if path == "/api/chat/voice":
-            fields, files = self._parse_multipart_form()
-            audio_data = files.get("audio") or (list(files.values())[0] if files else b"")
-            if not audio_data:
-                # Raw audio body fallback
-                length = int(self.headers.get("Content-Length", 0))
-                audio_data = self.rfile.read(length)
+        if path in ("/api/chat/transcribe", "/api/chat/voice"):
+            if self.headers.get_content_type() == "multipart/form-data":
+                _, files = self._parse_multipart_form()
+                audio = files.get("audio", b"")
+            else:
+                audio = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            action = server.transcribe if path == "/api/chat/transcribe" else server.chat_voice
+            self._send_json(action(audio))
+            return
 
-            turn = server.chat_voice(audio_data)
-            self._send_json(turn)
+        if path == "/api/voice/references":
+            self._send_json(server.save_voice_references(self._read_body_json().get("selected")))
             return
 
         if path == "/api/interview/save":
@@ -472,6 +547,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 category=body.get("category", "General"),
                 question=body.get("question", ""),
                 answer=body.get("answer", ""),
+                approved_for_chat=body.get("approved_for_chat") is True,
             )
             self._send_json(res)
             return

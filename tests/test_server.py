@@ -1,19 +1,37 @@
 """Unit and integration tests for the web server and REST API."""
 
 import json
-import socket
+import os
+import shutil
 import tempfile
 import threading
 import unittest
 import urllib.request
 from pathlib import Path
+from unittest.mock import patch
 
 from web.server import DigitalSelfServer, RequestHandler, ThreadedHTTPServer
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def enter_workspace(add_cleanup, *, static=False):
+    scratch = tempfile.TemporaryDirectory()
+    add_cleanup(scratch.cleanup)
+    add_cleanup(os.chdir, Path.cwd())
+    os.chdir(scratch.name)
+    Path("configs").mkdir()
+    shutil.copy(ROOT / "configs/persona.example.yaml", "configs")
+    Path("configs/settings.yaml").write_text("llm:\n  backend: mock\ntts:\n  engine: mock\n")
+    if static:
+        shutil.copytree(ROOT / "web/static", "web/static")
 
 
 class TestDigitalSelfServer(unittest.TestCase):
 
     def setUp(self):
+        enter_workspace(self.addCleanup)
         self.server = DigitalSelfServer()
 
     def test_get_status(self):
@@ -45,6 +63,16 @@ class TestDigitalSelfServer(unittest.TestCase):
         if test_file.exists():
             test_file.unlink()
 
+    def test_approval_is_preserved_after_reload_and_can_be_revoked(self):
+        save = self.server.save_interview_card
+        save("origins_early_life", "Origins", "Where?", "I built a cardboard lighthouse.", True)
+        restarted = DigitalSelfServer()
+        self.assertTrue(restarted.get_interview_questions()[0]["approved_for_chat"])
+        store = restarted.orchestrator.memory_store
+        self.assertEqual(store.query("lighthouse", approved_only=True)[0]["content"], "I built a cardboard lighthouse.")
+        restarted.save_interview_card("origins_early_life", "Origins", "Where?", "I built a cardboard lighthouse.")
+        self.assertEqual(DigitalSelfServer().orchestrator.memory_store.query("lighthouse", approved_only=True), [])
+
     def test_get_voice_prompts(self):
         prompts = self.server.get_voice_prompts()
         self.assertGreaterEqual(len(prompts), 10)
@@ -55,6 +83,19 @@ class TestDigitalSelfServer(unittest.TestCase):
         self.assertIn("response_text", res)
         self.assertIn("audio_url", res)
         self.assertTrue(res["audio_url"].startswith("/api/audio/"))
+
+    def test_voice_reference_selection_reloads_empty_and_nonempty(self):
+        directory = Path("data/audio/reference")
+        directory.mkdir(parents=True, exist_ok=True)
+        sample = directory / "phonetic_01_normalized.wav"
+        sample.touch()
+        self.assertEqual(self.server.save_voice_references([sample.name])["selected"], [sample.name])
+        self.assertEqual(DigitalSelfServer().selected_voice_references(), [sample])
+        with self.assertRaisesRegex(ValueError, "Voice Studio"):
+            self.server.save_voice_references(["../response.wav"])
+        self.assertEqual(self.server.get_voice_references()["selected"], [sample.name])
+        self.server.save_voice_references([])
+        self.assertEqual(DigitalSelfServer().selected_voice_references(), [])
 
     def test_import_chat(self):
         sample_chat = """[10/12/23, 1:00 PM] User: First message about systems engineering.
@@ -70,15 +111,12 @@ class TestWebServerHttpIntegration(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        # Pick a free ephemeral port
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.bind(("", 0))
-        cls.port = s.getsockname()[1]
-        s.close()
-
+        enter_workspace(cls.addClassCleanup, static=True)
         backend = DigitalSelfServer()
         RequestHandler.server_instance = backend
-        cls.httpd = ThreadedHTTPServer(("127.0.0.1", cls.port), RequestHandler)
+        cls.addClassCleanup(setattr, RequestHandler, "server_instance", None)
+        cls.httpd = ThreadedHTTPServer(("127.0.0.1", 0), RequestHandler)
+        cls.port = cls.httpd.server_port
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
         cls.thread.start()
 
@@ -226,25 +264,45 @@ class TestWebServerHttpIntegration(unittest.TestCase):
                 self.assertFalse(data.get("success"))
                 self.assertIn("error", data)
 
-    def test_post_chat_voice(self):
-        import io, math, struct, wave
-        buf = io.BytesIO()
-        sr = 24000
-        with wave.open(buf, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(sr)
-            samples = [int(0.1 * 32767.0 * math.sin(2 * math.pi * 300 * i / sr)) for i in range(sr)]
-            wf.writeframes(struct.pack(f"<{len(samples)}h", *samples))
-        wav_bytes = buf.getvalue()
+    def test_transcript_draft_does_not_generate_before_send(self):
+        backend = RequestHandler.server_instance
+        before = list(backend.orchestrator.chat_history)
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/chat/transcribe",
+            data=b"microphone fixture",
+            headers={"Content-Type": "audio/wav"},
+        )
+        with patch.object(backend.orchestrator.transcriber, "transcribe", return_value="Uncorrected words"):
+            with urllib.request.urlopen(request, timeout=5) as response:
+                self.assertEqual(json.load(response)["user_text"], "Uncorrected words")
+        self.assertEqual(backend.orchestrator.chat_history, before)
 
-        url = f"http://127.0.0.1:{self.port}/api/chat/voice"
-        req = urllib.request.Request(url, data=wav_bytes, headers={"Content-Type": "audio/wav"}, method="POST")
-        with urllib.request.urlopen(req) as resp:
-            self.assertEqual(resp.status, 200)
-            data = json.loads(resp.read().decode("utf-8"))
-            self.assertIn("response_text", data)
-            self.assertIn("audio_url", data)
+        with patch.object(backend.orchestrator.transcriber, "transcribe", return_value=""):
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(request, timeout=5)
+            with error.exception as response:
+                self.assertEqual(response.code, 422)
+                self.assertIn("No speech detected", json.load(response)["error"])
+        self.assertEqual(backend.orchestrator.chat_history, before)
+
+        with patch.object(backend.orchestrator.transcriber, "transcribe", return_value="Legacy spoken turn"):
+            request.full_url = f"http://127.0.0.1:{self.port}/api/chat/voice"
+            with urllib.request.urlopen(request, timeout=5) as response:
+                turn = json.load(response)
+                self.assertEqual(turn["user_text"], "Legacy spoken turn")
+                self.assertTrue(turn["audio_url"].startswith("/api/audio/"))
+
+    def test_empty_multipart_returns_without_reading_body_twice(self):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/chat/transcribe",
+            data=b"--empty--\r\n",
+            headers={"Content-Type": "multipart/form-data; boundary=empty"},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request, timeout=5)
+        with error.exception as response:
+            self.assertEqual(response.code, 422)
+            self.assertIn("No audio was captured", json.load(response)["error"])
 
     def test_post_memories_search_and_persona(self):
         # Test memories search
@@ -256,20 +314,20 @@ class TestWebServerHttpIntegration(unittest.TestCase):
             results = json.loads(resp.read().decode("utf-8"))
             self.assertIsInstance(results, list)
 
-        # Test persona update while preserving original config file
-        p_path = Path("configs/persona.yaml")
-        orig_persona = p_path.read_text(encoding="utf-8") if p_path.exists() else None
-        try:
-            url_persona = f"http://127.0.0.1:{self.port}/api/persona"
-            payload_p = json.dumps({"name": "Autonomous Tester"}).encode("utf-8")
-            req_p = urllib.request.Request(url_persona, data=payload_p, headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req_p) as resp:
-                self.assertEqual(resp.status, 200)
-                res_p = json.loads(resp.read().decode("utf-8"))
-                self.assertTrue(res_p.get("success"))
-        finally:
-            if orig_persona is not None:
-                p_path.write_text(orig_persona, encoding="utf-8")
+        url_persona = f"http://127.0.0.1:{self.port}/api/persona"
+        original = Path("configs/persona.yaml")
+        original.write_text("identity:\n  name: Existing Persona\n")
+        reply = "I'd try the simplest thing first."
+        payload = json.dumps({"name": "Autonomous Tester", "approved_replies": [reply]}).encode("utf-8")
+        request = urllib.request.Request(url_persona, data=payload, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            self.assertTrue(json.load(response)["success"])
+        with urllib.request.urlopen(url_persona, timeout=5) as response:
+            persona = json.load(response)
+        self.assertEqual(persona["identity"]["name"], "Autonomous Tester")
+        self.assertEqual(persona["communication_style"]["approved_replies"], [reply])
+        self.assertIn("Existing Persona", original.read_text())
+        self.assertEqual(DigitalSelfServer().get_persona()["communication_style"]["approved_replies"], [reply])
 
 
 if __name__ == "__main__":
